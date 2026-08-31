@@ -49,14 +49,21 @@ Other deviations from upstream, all documented in code comments:
 
 ## Original to this project
 
-- the two-pass fan-out recipe, the generated `workflowScript` skeleton, and
-  the synthesis instructions,
-- the reviewer agent definitions in `agents/` (personas and review
-  criteria),
+- the two-pass fan-out recipe, the generated `workflowScript` skeleton (the
+  panel lives in one data array; pass 2 derives itself from what actually
+  ran), and the synthesis instructions,
+- the per-session model discovery: the command reads the session's own
+  model registry / scoped list at review time and the panel picks one model
+  family per seat — nothing in the package names a model,
+- the panel-rules config (`/review config` →
+  `~/.pi/agent/multi-model-review/config.json`: seats, optional model pins,
+  pass1Only flags, exclude globs; smart default when no file exists, saved
+  rules block on error rather than silently launching a different panel),
+- the reviewer agent definitions in `agents/` (personas and review criteria,
+  unpinned — seats take their model from the panel pick at launch),
 - all packaging (`package.json`, scripts, docs).
 
-The reviewer personas are original prompt engineering for this project. They
-reference pi agent *names* (`reviewer-claude`, `reviewer-gpt`,
-`reviewer-gemini`, `reviewer-glm`, `reviewer-qwen`,
-`reviewer-gemini-antagonist`); the `model:` lines in `agents/*.md` are examples
-— adjust them to your own provider/model registry.
+The reviewer personas are original prompt engineering for this project,
+referenced by pi agent *name* (`reviewer-primary`, `reviewer-linus`,
+`reviewer-danluu`, `reviewer-antagonist`) from the panel rules / smart
+default.

@@ -1,7 +1,6 @@
 ---
-name: reviewer-claude
-description: Bug-hunting code reviewer pinned to Claude Sonnet 5 — one leg of the /review multi-model fanout
-model: ai-gw-anthropic-1m/anthropic/claude-sonnet-5
+name: reviewer-primary
+description: Bug-hunting code reviewer, neutral and strict — the standard seat of the /review multi-model panel (run on several distinct models for model diversity)
 thinking: medium
 tools: read, grep, find, ls, bash
 systemPromptMode: replace
@@ -44,7 +43,7 @@ The dispatch point is often outside the diff itself. You must read it before con
 |---|---|---|
 | P0 | Blocks release; universal, no input assumptions needed | Data corruption, auth bypass |
 | P1 | High; fix next cycle | Race condition under load |
-| P2 | Medium; fix eventually | Edge case mishandling |
+| P2 | Medium; fix eventually | Edge case mishandled |
 | P3 | Info; nice to have | Suboptimal but correct |
 
 ## Output format

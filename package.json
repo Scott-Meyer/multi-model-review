@@ -1,7 +1,7 @@
 {
   "name": "multi-model-review",
-  "version": "0.1.1",
-  "description": "A /review command for pi that fans a diff out to a five-model reviewer panel (Claude, GPT, Gemini, GLM, Qwen) in two passes and synthesizes one verdict — a port of oh-my-pi's /review command.",
+  "version": "0.2.0",
+  "description": "A /review command for pi that fans a diff out to a diverse multi-model reviewer panel in two passes and synthesizes one verdict \u2014 a port of oh-my-pi's /review command, models picked fresh from the session each time.",
   "license": "MIT",
   "author": "Scott Meyer",
   "type": "module",
@@ -22,16 +22,25 @@
     "url": "https://github.com/Scott-Meyer/multi-model-review/issues"
   },
   "homepage": "https://github.com/Scott-Meyer/multi-model-review#readme",
-  "files": ["src", "agents", "PROVENANCE.md", "LICENSE", "README.md"],
+  "files": [
+    "src",
+    "agents",
+    "PROVENANCE.md",
+    "LICENSE",
+    "README.md"
+  ],
   "engines": {
     "node": ">=22.19.0"
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json",
-    "verify:package": "node scripts/verify-package.mjs"
+    "verify:package": "node scripts/verify-package.mjs",
+    "test": "node --import jiti/register scripts/handler-test.mjs"
   },
   "pi": {
-    "extensions": ["./src/index.ts"]
+    "extensions": [
+      "./src/index.ts"
+    ]
   },
   "devDependencies": {
     "typescript": "^5.7.0"

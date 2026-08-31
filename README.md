@@ -1,9 +1,10 @@
 # multi-model-review
 
 A `/review` command for [pi](https://github.com/earendil-works/pi) that fans
-your diff out to a **five-model reviewer panel** — Claude, GPT, Gemini, GLM
-and Qwen, each running as its own reviewer subagent — then cross-checks them
-against each other and synthesizes one verdict.
+your diff out to a **diverse multi-model reviewer panel** — one model family
+per seat, picked fresh from whatever your session can reach, each running as
+its own reviewer subagent — then cross-checks them against each other and
+synthesizes one verdict.
 
 > Not affiliated with, endorsed by, or supported by oh-my-pi / Stencil Labs,
 > Inc., or by the pi project / Earendil Works. This is a port of oh-my-pi's
@@ -29,10 +30,9 @@ fonts, and binaries are stripped from the diff before reviewers see it.
 Then the actual review runs in **two passes**, driven by the
 [`pi-subagents`](https://www.npmjs.com/package/pi-subagents) `subagent` tool:
 
-- **Pass 1 (independent).** Each of the five reviewers (plus one deliberately
-  antagonistic extra voice) looks at the diff independently, with fresh
-  context. For big diffs each reviewer pulls the diff itself rather than
-  having it pasted in.
+- **Pass 1 (independent).** Each seat of the panel looks at the diff
+  independently, with fresh context, on its own model. For big diffs each
+  reviewer pulls the diff itself rather than having it pasted in.
 - **Pass 2 (cross-check).** Each core reviewer's own pass-1 run is resumed and
   handed *all* pass-1 write-ups, unlabeled and anonymized — including its own —
   and explicitly told to distrust all of them and re-verify against the real
@@ -45,6 +45,25 @@ The extension itself never runs a review — it computes the diff, filters the
 noise, and injects a prompt into the current session. The panel runs through
 your normal `subagent` tool as a background workflow; you get a report when
 pass 2 finishes.
+
+## The panel: personas, and models picked fresh every time
+
+Nothing in this package names a model. At review time the command reads the
+models this session can actually reach (session-scoped list if you set one,
+otherwise the whole authed registry) and the prompt picks **one model family
+per seat** — Claude vs GPT vs Gemini vs GLM vs Qwen, the totally different
+lineages — with two routes to the same underlying model (e.g. the same family
+at two context sizes) counting as one family. Breadth beats "best": an
+older model from a family nobody else on the panel is using is worth more
+than a second pick from the same family. If fewer distinct families exist
+than seats, the panel shrinks — several seats on one family is a single-model
+review with extra steps.
+
+The seats are personas, not models: three identically-instructed
+`reviewer-primary` seats (pure model diversity), a blunt Linus-style seat, a
+measured Dan-Luu-style seat, and a deliberately pass-1-only antagonist.
+Personas ship unpinned — each seat takes its model from the panel pick at
+launch.
 
 ## Install
 
@@ -82,10 +101,10 @@ matching pi itself.
 
 ## Required reviewer agents
 
-The command fans out to pi agents named `reviewer-claude`, `reviewer-gpt`,
-`reviewer-gemini`, `reviewer-glm`, `reviewer-qwen`, and (pass 1 only)
-`reviewer-gemini-antagonist`. These are example definitions, shipped in the package's `agents/` directory —
-install them by copying them into `~/.pi/agent/agents/`:
+The command fans out to pi agents named `reviewer-primary`, `reviewer-linus`,
+`reviewer-danluu`, and `reviewer-antagonist` (pass 1 only). These are example
+definitions, shipped in the package's `agents/` directory — install them by
+copying them into `~/.pi/agent/agents/`:
 
 ```bash
 # from a checkout of this repo:
@@ -102,27 +121,46 @@ name. (A `pi install` cannot ship them into your agents dir itself; the copy
 is the opt-in, so an installed update never clobbers your customized
 reviewers.)
 
-The `model:` line in each file is an **example, not a default** — it pins each
-reviewer to a model through my personal provider registry. Change it to a
-`provider/model` pair that exists in yours (see
-[pi docs on models](https://github.com/earendil-works/pi-coding-agent/blob/main/docs/models.md)).
-The personas (a blunt Linus-style GLM, a Dan-Luu-style Qwen, and an
-unstructured antagonistic Gemini) are just starting points — edit the prompt
-bodies freely.
+The personas have **no model pins** — seats take their model from the panel
+pick at launch. The prompt bodies (a blunt Linus-style reviewer, a
+measured Dan-Luu-style reviewer, a free-form antagonist) are just starting
+points — edit them freely; your customized copies are never clobbered by an
+update (the copy is the opt-in).
 
-## Changing the panel
+## Panel rules — `/review config`
 
-Edit the `CORE_REVIEWERS` / `EXTRA_PASS1_REVIEWERS` rosters at the top of
-[`src/index.ts`](src/index.ts):
+The panel is rules, seeded with a smart default. Run `/review config` to
+open the effective config in an editor — it saves atomically to
+`~/.pi/agent/multi-model-review/config.json`. No file means the smart
+default (six seats, no excludes). A saved file IS the rules:
 
-- `CORE_REVIEWERS` run both passes (independent review + cross-check resume).
-- `EXTRA_PASS1_REVIEWERS` run pass 1 only — their write-up is still folded into
-  what every core reviewer sees in pass 2, unlabeled, but they don't get a
-  cross-check round of their own. Good for a cheap, deliberately different
-  voice.
+```json
+{
+	"seats": [
+		{ "key": "primary-a", "agent": "reviewer-primary" },
+		{ "key": "primary-b", "agent": "reviewer-primary" },
+		{ "key": "primary-c", "agent": "reviewer-primary" },
+		{ "key": "linus", "agent": "reviewer-linus" },
+		{ "key": "danluu", "agent": "reviewer-danluu" },
+		{ "key": "antagonist", "agent": "reviewer-antagonist", "pass1Only": true }
+	],
+	"exclude": []
+}
+```
 
-Each entry needs a matching agent definition (`agent:` field) in your agents
-dir.
+- **seats** — the panel: one line per seat (`agent` = a pi agent name, optional
+  `model` pin in full `provider/id` form, optional `pass1Only`). Add a seat,
+  delete a seat, pin a seat, swap personas — it's your roster. Pinned seats
+  skip discovery and keep their pin (an unreachable pin blocks the review
+  with an actionable error rather than silently substituting).
+- **exclude** — glob strings matched against `provider/model-id` (and the bare
+  provider name): shrink the discovery pool, e.g. `"ai-gw-baseten/*"` or
+  `"openai"`. Denylist by design: the default stays "whatever it finds", and
+  an allowlist would go stale.
+
+A malformed saved config **blocks** the review with an error telling you what
+and where to fix — it never silently launches a different panel, because a
+saved pin or exclude can encode cost or policy intent.
 
 ## Dev loop
 

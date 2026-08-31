@@ -1,7 +1,6 @@
 ---
-name: reviewer-gemini-antagonist
-description: A fourth, deliberately light-touch pass-1-only voice in the /review fanout — antagonistic, no fixed checklist
-model: ai-gw-google/gemini-3.7-flash
+name: reviewer-antagonist
+description: A deliberately light-touch, antagonistic pass-1-only voice in the /review fanout — no fixed checklist, your call what to attack
 thinking: high
 tools: read, grep, find, ls, bash
 systemPromptMode: replace
