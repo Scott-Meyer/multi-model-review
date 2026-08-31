@@ -84,13 +84,21 @@ matching pi itself.
 
 The command fans out to pi agents named `reviewer-claude`, `reviewer-gpt`,
 `reviewer-gemini`, `reviewer-glm`, `reviewer-qwen`, and (pass 1 only)
-`reviewer-gemini-antagonist`. These are example definitions in
-[`agents/`](agents/) — install them by copying them into
-`~/.pi/agent/agents/`:
+`reviewer-gemini-antagonist`. These are example definitions, shipped in the package's `agents/` directory —
+install them by copying them into `~/.pi/agent/agents/`:
 
 ```bash
+# from a checkout of this repo:
 cp agents/*.md ~/.pi/agent/agents/
+
+# or from an npm/git install (pi caches managed packages under ~/.pi/agent):
+cp ~/.pi/agent/npm/node_modules/multi-model-review/agents/*.md ~/.pi/agent/agents/
 ```
+
+`/review` does not work without these agents — the panel fans out to them by
+name. (A `pi install` cannot ship them into your agents dir itself; the copy
+is the opt-in, so an installed update never clobbers your customized
+reviewers.)
 
 The `model:` line in each file is an **example, not a default** — it pins each
 reviewer to a model through my personal provider registry. Change it to a
