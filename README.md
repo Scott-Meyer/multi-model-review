@@ -91,8 +91,10 @@ install them by copying them into `~/.pi/agent/agents/`:
 # from a checkout of this repo:
 cp agents/*.md ~/.pi/agent/agents/
 
-# or from an npm/git install (pi caches managed packages under ~/.pi/agent):
+# or from a managed install (pi caches npm and git packages separately):
 cp ~/.pi/agent/npm/node_modules/multi-model-review/agents/*.md ~/.pi/agent/agents/
+# — or, for a `pi install git:` —
+cp ~/.pi/agent/git/github.com/Scott-Meyer/multi-model-review/agents/*.md ~/.pi/agent/agents/
 ```
 
 `/review` does not work without these agents — the panel fans out to them by
