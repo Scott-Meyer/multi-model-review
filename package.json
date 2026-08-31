@@ -1,0 +1,42 @@
+{
+  "name": "multi-model-review",
+  "version": "0.1.0",
+  "description": "A /review command for pi that fans a diff out to a five-model reviewer panel (Claude, GPT, Gemini, GLM, Qwen) in two passes and synthesizes one verdict — a port of oh-my-pi's /review command.",
+  "license": "MIT",
+  "author": "Scott Meyer",
+  "type": "module",
+  "keywords": [
+    "pi",
+    "pi-coding-agent",
+    "pi-package",
+    "pi-extension",
+    "code-review",
+    "multi-model",
+    "agent"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Scott-Meyer/multi-model-review.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Scott-Meyer/multi-model-review/issues"
+  },
+  "homepage": "https://github.com/Scott-Meyer/multi-model-review#readme",
+  "files": ["src", "agents", "PROVENANCE.md", "LICENSE", "README.md"],
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "verify:package": "node scripts/verify-package.mjs"
+  },
+  "pi": {
+    "extensions": ["./src/index.ts"]
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  }
+}
