@@ -1,6 +1,6 @@
 {
   "name": "multi-model-review",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "A /review command for pi that fans a diff out to a five-model reviewer panel (Claude, GPT, Gemini, GLM, Qwen) in two passes and synthesizes one verdict — a port of oh-my-pi's /review command.",
   "license": "MIT",
   "author": "Scott Meyer",
