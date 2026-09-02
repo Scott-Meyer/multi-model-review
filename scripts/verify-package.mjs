@@ -43,6 +43,9 @@ const REQUIRED = [
   // Verbatim upstream templates + our override sections. Read at runtime, so a
   // missing one is a first-use crash rather than an install failure.
   ...assetsIn("src/prompts"),
+  // The launch scripts. Also read from disk at render time (embed.ts extracts
+  // the emitted region from the source), so they are runtime assets too.
+  ...assetsIn("src/launch"),
   // Verbatim upstream renderer (zero-dependency).
   ...assetsIn("vendor"),
   ...assetsIn("agents"),

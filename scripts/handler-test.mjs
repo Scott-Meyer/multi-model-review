@@ -152,7 +152,7 @@ function expect(cond, label) {
  * false-success it exists to prevent. Raise it when adding a block; lower it
  * only when deliberately removing coverage.
  */
-const EXPECTED_MIN_CHECKS = 350;
+const EXPECTED_MIN_CHECKS = 380;
 process.on("uncaughtException", (err) => {
 	console.error(`\nHARNESS CRASHED after ${checks} checks: ${err?.stack ?? err}`);
 	process.exit(1);
@@ -2079,6 +2079,267 @@ diff --git a/real.ts b/real.ts
 		threw !== undefined && threw.constructor.name === "PromptContractError",
 		`27e: it is a PromptContractError, so index.ts reports it cleanly (${threw?.constructor?.name})`,
 	);
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// 28. Launch scripts: EXECUTED, not grepped.
+//
+// These are the orchestration programs the prompt hands to the model. They used
+// to live as JavaScript inside markdown code fences, where nothing compiled them
+// and nothing ran them — so three bugs shipped in them, and a test could only
+// search the text for substrings. That is not a hypothetical limitation: an
+// earlier assertion here matched `pass: 2` in the PROSE explaining the field
+// rather than the code setting it, and passed with the code deleted.
+//
+// They are now real modules under src/launch, so this block runs them against a
+// fake `runs` and asserts on behaviour. The single property that matters most:
+// a child that FAILED must never appear as review output. `runId` cannot express
+// that — a failed child keeps it, because it stays resumable — so the fake
+// deliberately gives failures a runId, which makes a `runId`-based filter fail
+// this block instead of shipping.
+// ────────────────────────────────────────────────────────────────────────────
+{
+	const load = async (name) => {
+		const ns = await import(`../src/launch/${name}.ts`);
+		return ns.default ?? ns;
+	};
+	const upstream = await load("upstream-shard");
+	const single = await load("panel-single-pass");
+	const xcheck = await load("panel-cross-check");
+	const multimodal = await load("panel-multimodal");
+
+	/** A fake `runs` whose FAILED children still carry a runId, as real ones do. */
+	const fakeRuns = (failKeys = []) => ({
+		calls: [],
+		async all(items) {
+			this.calls.push(items);
+			return items.map((it) => {
+				const failed = failKeys.includes(it.key);
+				return {
+					key: it.key,
+					ok: !failed,
+					// A failure's output is an error receipt, never a review.
+					output: failed ? `ERROR RECEIPT for ${it.key}` : `review from ${it.key}`,
+					runId: `run-${it.key}`,
+					error: failed ? "transient model error" : null,
+				};
+			});
+		},
+	});
+
+	// 28a-c: upstream shape. One failed shard must be reported, not reviewed.
+	{
+		const runs = fakeRuns(["s2"]);
+		const out = await upstream.run(runs, [
+			{ key: "s1", files: ["a.ts"], diff: "hunks-a" },
+			{ key: "s2", files: ["b.ts"], diff: "hunks-b" },
+		]);
+		expect(out.reviews.length === 1 && out.reviews[0].shard === "s1", "28a: only the surviving shard is a review");
+		expect(out.failed.length === 1 && out.failed[0].shard === "s2", "28b: the failed shard is reported as failed");
+		expect(
+			!JSON.stringify(out.reviews).includes("ERROR RECEIPT"),
+			"28c: a failed child's error receipt never appears as review output",
+		);
+		expect(runs.calls[0][0].task.includes("hunks-a"), "28c2: each child's task carries its own diff");
+	}
+
+	// 28d-f: panel, single pass.
+	{
+		const seats = [
+			{ key: "s1-a", shardId: 1, model: "p/a", files: ["a.ts"], diff: "d1" },
+			{ key: "s1-b", shardId: 1, model: "p/b", files: ["a.ts"], diff: "d1" },
+		];
+		const runs = fakeRuns(["pass1-s1-b"]);
+		const out = await single.run(runs, seats);
+		expect(out.reviews.length === 1 && out.reviews[0].seat === "pass1-s1-a", "28d: only surviving seats are reviews");
+		expect(out.failed.length === 1, "28e: the failed seat is reported");
+		expect(out.reviews[0].shardId === 1, "28f: shardId is carried through for per-shard denominators");
+	}
+
+	// 28g-k: panel, cross-check. The pass-2 semantics are the subtle part.
+	{
+		const seats = [
+			{ key: "s1-a", shardId: 1, model: "p/a", files: ["a.ts"], diff: "d1" },
+			{ key: "s1-b", shardId: 1, model: "p/b", files: ["a.ts"], diff: "d1" },
+			{ key: "s2-a", shardId: 2, model: "p/a", files: ["b.ts"], diff: "d2" },
+		];
+		// s1-b's CROSS-CHECK fails, though its pass 1 succeeded.
+		const runs = fakeRuns(["pass2-s1-b"]);
+		const out = await xcheck.run(runs, seats);
+
+		expect(out.pass1.length === 3, `28g: every surviving seat is in pass1 (${out.pass1.length})`);
+		expect(
+			out.pass2.length === 1 && out.pass2[0].seat === "pass2-s1-a",
+			`28h: only SUCCESSFUL cross-checks are in pass2 (${JSON.stringify(out.pass2.map((p) => p.seat))})`,
+		);
+		expect(
+			!JSON.stringify(out.pass2).includes("ERROR RECEIPT"),
+			"28i: a failed cross-check never masquerades as a reconsidered review",
+		);
+		expect(
+			out.failed.some((f) => f.seat === "pass2-s1-b" && f.pass === 2),
+			`28j: the failed cross-check is reported, tagged pass 2 (${JSON.stringify(out.failed)})`,
+		);
+		// s2-a is alone in shard 2, so it has no peer to cross-examine. Its review is
+		// the only coverage those files got and must never be dropped.
+		expect(
+			out.uncrossChecked.length === 1 && out.uncrossChecked[0].seat === "s2-a",
+			`28k: a sole survivor's review is carried as uncrossChecked (${JSON.stringify(out.uncrossChecked)})`,
+		);
+		// Peers cross-examine only within their own shard.
+		const pass2Call = runs.calls[1] ?? [];
+		expect(
+			pass2Call.every((it) => !it.task.includes("s2-a")),
+			"28l: cross-check peers are drawn only from the same shard",
+		);
+		expect(pass2Call.every((it) => typeof it.resume === "string"), "28m: pass 2 resumes the pass-1 run");
+	}
+
+	// 28n-p: pass-1 failure in cross-check mode also strands its peer.
+	{
+		const seats = [
+			{ key: "s1-a", shardId: 1, model: "p/a", files: ["a.ts"], diff: "d1" },
+			{ key: "s1-b", shardId: 1, model: "p/b", files: ["a.ts"], diff: "d1" },
+		];
+		const out = await xcheck.run(fakeRuns(["pass1-s1-b"]), seats);
+		expect(out.pass1.length === 1, "28n: the failed pass-1 seat is not in pass1");
+		expect(out.failed.some((f) => f.pass === 1), "28o: it is reported as a pass-1 failure");
+		expect(
+			out.uncrossChecked.length === 1 && out.uncrossChecked[0].seat === "s1-a",
+			"28p: its surviving peer becomes a sole survivor, not a silent drop",
+		);
+	}
+
+	// 28q-s: multimodal panel.
+	{
+		const out = await multimodal.run(
+			fakeRuns(["antagonist"]),
+			[
+				{ key: "claude", agent: "reviewer-primary", model: "p/c" },
+				{ key: "antagonist", agent: "reviewer-antagonist", model: "p/cheap" },
+			],
+			"the whole diff",
+		);
+		expect(out.reviews.length === 1 && out.reviews[0].seat === "claude", "28q: only surviving seats are reviews");
+		expect(out.failed.length === 1 && out.failed[0].seat === "antagonist", "28r: the failed persona seat is reported");
+		expect(!JSON.stringify(out.reviews).includes("ERROR RECEIPT"), "28s: no error receipt in panel reviews");
+	}
+
+	// 28t-z: COMPILE AND RUN the exact text handed to the model.
+	//
+	// The module-level checks above prove the logic behaves; they do not prove the
+	// artifact does. Grepping the emitted string cannot tell a syntax error from a
+	// working script, and it cannot tell whether the text still means what the
+	// module means. So: take scriptBody() — byte-identical to what script() embeds
+	// — prepend a concrete data declaration in place of the illustrative one, and
+	// run it through AsyncFunction with the same fake `runs`. Compilation catches
+	// syntax and stray annotations; the assertions catch semantics.
+	const embedNS = await import("../src/launch/embed.ts");
+	const { scriptBody } = embedNS.default ?? embedNS;
+	const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
+	const runEmitted = async (moduleFile, declaration, runs) => {
+		const source = `${declaration}\n${scriptBody(moduleFile)}`;
+		let compiled;
+		try {
+			compiled = new AsyncFunction("runs", source);
+		} catch (err) {
+			throw new Error(`${moduleFile} emitted text does not parse as JavaScript: ${err.message}`);
+		}
+		return compiled(runs);
+	};
+
+	const seatDecl = `const seats = ${JSON.stringify([
+		{ key: "s1-a", shardId: 1, model: "p/a", files: ["a.ts"], diff: "d1" },
+		{ key: "s1-b", shardId: 1, model: "p/b", files: ["a.ts"], diff: "d1" },
+		{ key: "s2-a", shardId: 2, model: "p/a", files: ["b.ts"], diff: "d2" },
+	])};`;
+
+	// upstream-shard
+	{
+		const decl = `const shards = ${JSON.stringify([
+			{ key: "s1", files: ["a.ts"], diff: "hunks-a" },
+			{ key: "s2", files: ["b.ts"], diff: "hunks-b" },
+		])};`;
+		const out = await runEmitted("upstream-shard.ts", decl, fakeRuns(["s2"]));
+		expect(out.reviews.length === 1 && out.reviews[0].shard === "s1", "28t: emitted upstream script runs and reviews survivors");
+		expect(out.failed.length === 1 && out.failed[0].shard === "s2", "28u: emitted upstream script reports the failure");
+		expect(!JSON.stringify(out.reviews).includes("ERROR RECEIPT"), "28v: emitted upstream script excludes error receipts");
+	}
+
+	// panel-single-pass
+	{
+		const out = await runEmitted("panel-single-pass.ts", seatDecl, fakeRuns(["pass1-s1-b"]));
+		expect(out.reviews.length === 2, `28w: emitted single-pass script reviews survivors (${out.reviews.length})`);
+		expect(out.failed.length === 1, "28x: emitted single-pass script reports the failure");
+		expect(!JSON.stringify(out.reviews).includes("ERROR RECEIPT"), "28x2: emitted single-pass excludes error receipts");
+	}
+
+	// panel-cross-check: the pass-2 semantics, in the artifact itself
+	{
+		const out = await runEmitted("panel-cross-check.ts", seatDecl, fakeRuns(["pass2-s1-b"]));
+		expect(out.pass1.length === 3, `28y: emitted cross-check script keeps all pass-1 survivors (${out.pass1.length})`);
+		expect(
+			out.pass2.length === 1 && out.pass2[0].seat === "pass2-s1-a",
+			`28y2: emitted cross-check script filters pass 2 on ok (${JSON.stringify(out.pass2.map((p) => p.seat))})`,
+		);
+		expect(
+			!JSON.stringify(out.pass2).includes("ERROR RECEIPT"),
+			"28y3: emitted cross-check script never reports a failed resume as a reconsidered review",
+		);
+		expect(
+			out.failed.some((f) => f.seat === "pass2-s1-b" && f.pass === 2),
+			`28y4: emitted cross-check script tags the pass-2 failure (${JSON.stringify(out.failed)})`,
+		);
+		expect(
+			out.uncrossChecked.length === 1 && out.uncrossChecked[0].seat === "s2-a",
+			`28y5: emitted cross-check script carries the sole survivor (${JSON.stringify(out.uncrossChecked)})`,
+		);
+	}
+
+	// panel-multimodal
+	{
+		const decl = `const seats = ${JSON.stringify([
+			{ key: "claude", agent: "reviewer-primary", model: "p/c" },
+			{ key: "antagonist", agent: "reviewer-antagonist", model: "p/cheap" },
+		])};\nconst task = "the whole diff";`;
+		const out = await runEmitted("panel-multimodal.ts", decl, fakeRuns(["antagonist"]));
+		expect(out.reviews.length === 1 && out.reviews[0].seat === "claude", "28z: emitted multimodal script runs");
+		expect(out.failed.length === 1 && out.failed[0].seat === "antagonist", "28z2: emitted multimodal reports failures");
+	}
+
+	// And the right variant reaches the right prompt.
+	const rcNS5 = await import("../src/review-core.ts");
+	const rc5 = rcNS5.default ?? rcNS5;
+	const stats5 = rc5.parseDiff("diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n@@ -1 +1,2 @@\n a\n+b\n");
+	const jsOf = (cfg, variant) => {
+		const p = rc5.buildReviewPrompt("m", stats5, "d", cfg, { variant });
+		return p.split("```javascript")[1]?.split("```")[0] ?? "";
+	};
+	const base = { shardDepth: "auto", confirmAboveRuns: 12, modelsText: "- `p/m`" };
+	const variants = {
+		upstream: jsOf({ ...base, families: 1, crossCheck: false }, "sharded"),
+		"single-pass": jsOf({ ...base, families: 3, crossCheck: false }, "sharded"),
+		"cross-check": jsOf({ ...base, families: 3, crossCheck: true, confirmAboveRuns: 99 }, "sharded"),
+		multimodal: jsOf({ ...base, families: 3, crossCheck: false }, "panel"),
+	};
+	for (const [name, js] of Object.entries(variants)) {
+		expect(js.trim().length > 100, `28aa-${name}: a launch script was embedded (${js.trim().length} chars)`);
+		expect(!js.includes(">>> script") && !js.includes("<<< script"), `28ab-${name}: sentinels are stripped`);
+		expect(!js.includes("{{"), `28ac-${name}: no unrendered template expression`);
+		// The prompt's copy must be the SAME logic the tests just executed.
+		const moduleFile =
+			name === "upstream"
+				? "upstream-shard.ts"
+				: name === "single-pass"
+					? "panel-single-pass.ts"
+					: name === "cross-check"
+						? "panel-cross-check.ts"
+						: "panel-multimodal.ts";
+		expect(js.includes(scriptBody(moduleFile)), `28ad-${name}: the prompt embeds the exact tested logic, byte for byte`);
+	}
+	expect(variants["cross-check"].includes("pass2"), "28ae: the cross-check variant has a second pass");
+	expect(!variants["single-pass"].includes("pass2"), "28ae2: the single-pass variant does NOT");
+	expect(variants.multimodal.includes("agent: s.agent"), "28ae3: the multimodal variant varies the agent per seat");
 }
 
 // ── cleanup ────────────────────────────────────────────────────────────────

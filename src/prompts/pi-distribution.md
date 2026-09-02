@@ -13,25 +13,7 @@ Keep both halves of a rename in the same shard. Rename detection is a property o
 Every file above must land in exactly one shard. Each reviewer sees only its own files. Launch them in one `subagent` call using `workflowScript` with `runs.all`, `async: true`, and nothing else: extra top-level fields are forwarded to every child as defaults and quietly change the run.
 
 ```javascript
-// runs.all resolves to a plain ARRAY in input order — items have .key, .output,
-// .runId. It is NEVER keyed by run key.
-const shards = [
-  // { key: "s1", files: ["src/a.ts"], diff: "<hunks for those files, or the documented fetch command>" },
-];
-const results = await runs.all(
-  shards.map((s) => ({
-    key: s.key,
-    agent: "omp-reviewer",
-    task: `...review scope and focus from above...\nYour files: ${s.files.join(", ")}\n${s.diff}`,
-  })),
-);
-// `ok` is the success flag, not `runId`: a seat that started and then failed
-// still HAS a runId (it stays resumable), so filtering on runId reports its
-// error receipt as a review and leaves `failed` empty.
-return {
-  reviews: results.filter((r) => r.ok).map((r) => ({ shard: r.key, output: r.output })),
-  failed: results.filter((r) => !r.ok).map((r) => ({ shard: r.key, error: r.error ?? null })),
-};
+{{launchScript}}
 ```
 
 Each task must be self-contained: a fresh subagent sees only its own task text, not this prompt, so paste that shard's file list AND its diff hunks in — or the documented fetch command when the diff was omitted as too large.
@@ -99,108 +81,7 @@ One top-level `subagent` call: this script as `workflowScript`, a short `name`, 
 Each seat's task text must be self-contained. A fresh subagent sees only its own task — not this prompt — so paste that seat's assigned file list AND the diff hunks for those files into its task. If the diff was omitted above as too large, paste the documented command for pulling it instead. The reviewer instructions forbid re-running git when hunks were provided, so a seat that receives neither has nothing to work from.
 
 ```javascript
-// runs.all resolves to a plain ARRAY in input order — each item an object with
-// .key, .output, .runId. It is NEVER keyed by run key. Look results up by key.
-function findRun(results, key) {
-  const r = results.find((x) => x.key === key);
-  return r ?? null;
-}
-
-// One entry per (shard x family). shardId records which files a seat read;
-{{#if crossCheck}}// it is also what groups peers for the cross-check, so reviewers only
-// cross-examine others who read the same files.{{else}}// it is reported with each review so synthesis can compute per-shard
-// agreement denominators.{{/if}}
-const seats = [
-  // { key: "s1-claude", shardId: 1, model: "<provider/id from the list above>",
-  //   files: ["src/a.ts", "src/b.ts"],
-  //   diff: "<the diff hunks for THOSE files, verbatim — or the documented command to fetch them>" },
-  // ...one entry per shard x family. Seats in the same shard share files and diff,
-  // and differ only in key and model.
-];
-
-// A fresh subagent CANNOT see this prompt. Everything it needs goes in its
-// task text: the scope, its assigned files, and the actual diff content for
-// those files — pasted in when the diff appears above, or the exact command to
-// obtain it when the diff was omitted as too large. A reviewer told to "use the
-// hunks below" with no hunks attached, and forbidden from re-running git, has
-// nothing to review.
-const pass1Task = (seat) => `...review scope and focus from above...
-Your assigned files: ${seat.files.join(", ")}
-${seat.diff}   // <- the diff hunks for THOSE files, verbatim, or the documented command to fetch them`;
-
-const pass1 = await runs.all(
-  seats.map((s) => ({ key: "pass1-" + s.key, agent: "omp-reviewer", model: s.model, task: pass1Task(s) })),
-);
-
-// A seat that failed (transient model error, rate limit, bad route) has ok:false.
-// Cross-check the survivors; report the failures. Test `ok`, never `runId` — a
-// failed seat keeps its runId so it stays resumable, so filtering on runId would
-// treat an error receipt as review output.
-const done1 = pass1.filter((r) => r.ok);
-
-{{#if crossCheck}}
-const pass2Items = [];
-const noCrossCheck = []; // seats with no surviving peer: still real review output
-for (const seat of seats) {
-  const mine = findRun(done1, "pass1-" + seat.key);
-  if (!mine) continue;
-  const peers = seats
-    .filter((p) => p.shardId === seat.shardId && p.key !== seat.key)
-    .map((p) => findRun(done1, "pass1-" + p.key))
-    .filter((r) => r !== null);
-  if (peers.length === 0) {
-    // Sole survivor of its shard (one family, or every peer failed). There
-    // is nothing to cross-check against, but its pass-1 findings are the ONLY
-    // coverage those files got — carry them into synthesis, never drop them.
-    noCrossCheck.push({ seat: seat.key, shardId: seat.shardId, output: mine.output });
-    continue;
-  }
-  const writeups = peers
-    .map((r, i) => `--- Peer write-up ${i + 1} ---\n${r.output}`)
-    .join("\n\n");
-  pass2Items.push({
-    key: "pass2-" + seat.key,
-    resume: mine.runId,
-    task: `...pass-2 cross-check task text as described below, with these write-ups pasted in:\n\n${writeups}`,
-  });
-}
-
-const pass2 = pass2Items.length > 0 ? await runs.all(pass2Items) : [];
-
-return {
-  // BOTH passes are returned on purpose. Pass 1 is the only UNCONTAMINATED
-  // record: once a reviewer has read its peers' write-ups it can no longer be
-  // used as an independent witness. The per-finding independent agreement count
-  // must be computed from pass1, never from pass2.
-  pass1: done1.map((r) => {
-    const seat = seats.find((s) => "pass1-" + s.key === r.key);
-    return { seat: r.key, shardId: seat ? seat.shardId : null, output: r.output };
-  }),
-  // Filtered on ok, exactly like pass 1: a pass-2 child that failed still
-  // returns an entry, and its `output` is an error receipt. Mapping it
-  // unfiltered would present that receipt to synthesis as a cross-check
-  // result — a reviewer appearing to have reconsidered when it never ran.
-  pass2: pass2.filter((r) => r.ok).map((r) => ({ seat: r.key, output: r.output })),
-  // Reviewed, but never cross-checked. Report as lower-confidence, not absent.
-  uncrossChecked: noCrossCheck,
-  // Both passes, or a seat that failed the cross-check reads as fully
-  // cross-checked. Tag which pass died so synthesis can say so.
-  failed: [
-    ...pass1.filter((r) => !r.ok).map((r) => ({ seat: r.key, pass: 1, error: r.error ?? null })),
-    ...pass2.filter((r) => !r.ok).map((r) => ({ seat: r.key, pass: 2, error: r.error ?? null })),
-  ],
-};
-{{else}}
-// Single pass: no seat reads another's write-up, so these findings are
-// independent by construction and their agreement counts need no caveat.
-return {
-  reviews: done1.map((r) => {
-    const seat = seats.find((s) => "pass1-" + s.key === r.key);
-    return { seat: r.key, shardId: seat ? seat.shardId : null, output: r.output };
-  }),
-  failed: pass1.filter((r) => !r.ok).map((r) => ({ seat: r.key, error: r.error ?? null })),
-};
-{{/if}}
+{{launchScript}}
 ```
 
 Why `async: true`: this is minutes of work. Blocking leaves the user watching a dead conversation; async hands back a receipt and wakes you with the results. Do not poll and do not use `subagent_wait` for it.

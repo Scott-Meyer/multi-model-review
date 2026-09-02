@@ -27,6 +27,10 @@ import {
 	reviewHeadlessRequestTemplate,
 	reviewRequestTemplate,
 } from "./overrides.ts";
+import * as panelCrossCheck from "./launch/panel-cross-check.ts";
+import * as panelMultimodal from "./launch/panel-multimodal.ts";
+import * as panelSinglePass from "./launch/panel-single-pass.ts";
+import * as upstreamShard from "./launch/upstream-shard.ts";
 
 /**
  * A template referenced a name its builder does not supply.
@@ -402,7 +406,7 @@ export function buildReviewPrompt(
 		diffInstruction: options.diffInstruction ?? DEFAULT_LARGE_DIFF_INSTRUCTION,
 		contextInstruction: options.contextInstruction ?? DEFAULT_CONTEXT_INSTRUCTION,
 		// The multi-model delta, consumed only by our override sections.
-		...panelTemplateContext(panel, agentCount),
+		...panelTemplateContext(panel, agentCount, options.variant),
 		...untrackedTemplateContext(options.untracked),
 	}, `review-request.md (${options.variant})`);
 }
@@ -415,7 +419,7 @@ export function buildCustomReviewPrompt(
 ): string {
 	return renderChecked(reviewCustomRequestTemplate(variant), {
 		instructions,
-		...panelTemplateContext(panel, 1),
+		...panelTemplateContext(panel, 1, variant),
 		...untrackedTemplateContext(untracked),
 	}, `review-custom-request.md (${variant})`);
 }
@@ -437,7 +441,7 @@ export function buildHeadlessReviewPrompt(
 		// Headless has no pre-built diff, so the prompt carries the command that
 		// makes one.
 		snapshotCommand,
-		...panelTemplateContext(panel, 1),
+		...panelTemplateContext(panel, 1, variant),
 		...untrackedTemplateContext(),
 	}, `review-headless-request.md (${variant})`);
 }
@@ -482,7 +486,27 @@ function untrackedTemplateContext(untracked: readonly string[] = []): Record<str
  * user before launch, and they decide, rather than the code redefining N or K
  * on their behalf.
  */
-function panelTemplateContext(panel: PanelContext, agentCount: number): Record<string, unknown> {
+/**
+ * Pick the launch script for a configuration.
+ *
+ * The scripts are real modules under ./launch, type-checked and executed by the
+ * suite against a fake `runs`; this only chooses which one the prompt embeds.
+ * They used to live as JavaScript inside markdown code fences, interleaved by
+ * `{{#if crossCheck}}`, where nothing compiled or ran them — which is how a
+ * survivor filter testing `runId` instead of `ok`, an unfiltered pass-2 map, and
+ * cross-check text on single-pass runs all shipped.
+ */
+function launchScriptFor(variant: ReviewVariant, upstreamShape: boolean, crossCheck: boolean): string {
+	if (variant === "panel") return panelMultimodal.script();
+	if (upstreamShape) return upstreamShard.script();
+	return crossCheck ? panelCrossCheck.script() : panelSinglePass.script();
+}
+
+function panelTemplateContext(
+	panel: PanelContext,
+	agentCount: number,
+	variant: ReviewVariant,
+): Record<string, unknown> {
 	const families = Math.max(1, panel.families);
 	const crossCheckOn = panel.crossCheck && families > 1;
 	// "auto" is upstream's own recommendation, used verbatim. An explicit number
@@ -507,6 +531,7 @@ function panelTemplateContext(panel: PanelContext, agentCount: number): Record<s
 		crossCheck: crossCheckOn,
 		plannedInvocations,
 		upstreamShape: families === 1 && !panel.crossCheck,
+		launchScript: launchScriptFor(variant, families === 1 && !panel.crossCheck, crossCheckOn),
 		shardDepthOverridden: panel.shardDepth !== "auto",
 		recommendedShards: agentCount,
 		confirmAboveRuns: panel.confirmAboveRuns,
