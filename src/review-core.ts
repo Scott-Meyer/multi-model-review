@@ -21,11 +21,92 @@
  */
 import * as prompt from "../vendor/prompt.ts";
 import {
+	OverrideError,
 	type ReviewVariant,
 	reviewCustomRequestTemplate,
 	reviewHeadlessRequestTemplate,
 	reviewRequestTemplate,
 } from "./overrides.ts";
+
+/**
+ * A template referenced a name its builder does not supply.
+ *
+ * Exists because the vendored renderer cannot tell us. `vendor/template.ts` is a
+ * reimplementation of handlebars whose `strict` option is declared in the type
+ * (line 32) and never honoured, so an unsupplied variable renders as the empty
+ * string and the prompt ships subtly wrong. That is not hypothetical: it is how
+ * the custom-instructions prompt shipped a numbered instruction with no text and
+ * a reference to a diff it does not contain, and how the headless prompt shipped
+ * fan-out mechanics with no statement of scope. Both were invisible to `tsc`, to
+ * the renderer, and to every test that did not happen to read that exact line.
+ *
+ * The engine is verbatim upstream by contract, so it cannot be made strict.
+ * Validating at the three call sites is the next best place: one check, applied
+ * to every prompt, that turns a silent content bug into a loud failure.
+ *
+ * Subclasses OverrideError so index.ts reports it through the existing
+ * "prompt override failed" path — a missing variable IS a prompt-assembly bug.
+ */
+export class PromptContractError extends OverrideError {}
+
+/**
+ * Wrap a render context so a lookup of a name it does not have THROWS.
+ *
+ * Deliberately not a template parser. An earlier attempt at this re-derived the
+ * mustache grammar here — helper-vs-path classification, item-scope tracking, a
+ * hand-maintained list of registered helper names — and that is unsafe in
+ * production for a specific reason: a helper the list does not know gets
+ * misread as a context path, so registering a new helper would make a valid
+ * template throw and break the command outright. Duplicating a grammar that
+ * `vendor/template.ts` already implements is how that class of bug arrives.
+ *
+ * This instead lets the renderer's own resolver do the work. `property()`
+ * (vendor/template.ts:325-332) resolves every path segment with
+ * `Object.hasOwn(record, key) ? record[key] : undefined` — so a Proxy whose
+ * `getOwnPropertyDescriptor` trap throws on an absent string key turns that
+ * silent `undefined` into a loud failure, using the engine's real grammar for
+ * free. `length` and the prototype keys are special-cased before that call, so
+ * they never reach the trap.
+ *
+ * Own keys holding `undefined` stay valid: an absent `focus` or a missing
+ * snapshot command is supplied-and-empty on purpose. Never-supplied is the bug.
+ */
+function strictContext<T>(value: T, where: string): T {
+	if (value === null || typeof value !== "object") return value;
+	if (value instanceof Date || value instanceof RegExp) return value;
+	return new Proxy(value as object, {
+		getOwnPropertyDescriptor(target, key) {
+			if (typeof key === "string" && !Object.hasOwn(target, key)) {
+				throw new PromptContractError(
+					`${where} reads template variable "${key}", which its builder does not supply. ` +
+						`The renderer would substitute an empty string, shipping a prompt with a ` +
+						`missing instruction rather than failing. Supply the key (undefined is fine ` +
+						`if absence is intended) or stop referencing it.`,
+				);
+			}
+			return Reflect.getOwnPropertyDescriptor(target, key);
+		},
+		get(target, key, receiver) {
+			const result = Reflect.get(target, key, receiver);
+			// Wrap nested values too, so `{{#table files}}{{path}}{{/table}}` holds
+			// item objects to the same contract as the top-level context.
+			return typeof key === "string" ? strictContext(result, where) : result;
+		},
+	}) as T;
+}
+
+/**
+ * Render, failing loudly when the template reads a name the context lacks.
+ *
+ * Exported so the suite can exercise the contract at its real boundary: the
+ * builders below always spread a complete context, so a violation can only be
+ * introduced by editing a TEMPLATE to read something new — which is exactly what
+ * happened twice. A test needs to render a real template against a deliberately
+ * incomplete context to prove the guard fires.
+ */
+export function renderChecked(template: string, context: Record<string, unknown>, what: string): string {
+	return prompt.render(template, strictContext(context, what));
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -305,7 +386,7 @@ export function buildReviewPrompt(
 		hunksPreview: skipDiff ? getDiffPreview(f.hunks, linesPerFile) : "",
 	}));
 
-	return prompt.render(reviewRequestTemplate(options.variant), {
+	return renderChecked(reviewRequestTemplate(options.variant), {
 		mode,
 		files: filesWithExt,
 		excluded: stats.excluded,
@@ -323,7 +404,7 @@ export function buildReviewPrompt(
 		// The multi-model delta, consumed only by our override sections.
 		...panelTemplateContext(panel, agentCount),
 		...untrackedTemplateContext(options.untracked),
-	});
+	}, `review-request.md (${options.variant})`);
 }
 
 export function buildCustomReviewPrompt(
@@ -332,11 +413,11 @@ export function buildCustomReviewPrompt(
 	untracked: readonly string[],
 	variant: ReviewVariant,
 ): string {
-	return prompt.render(reviewCustomRequestTemplate(variant), {
+	return renderChecked(reviewCustomRequestTemplate(variant), {
 		instructions,
 		...panelTemplateContext(panel, 1),
 		...untrackedTemplateContext(untracked),
-	});
+	}, `review-custom-request.md (${variant})`);
 }
 
 /**
@@ -351,14 +432,14 @@ export function buildHeadlessReviewPrompt(
 	/** Undefined when cwd is neither a git nor a jj checkout. */
 	snapshotCommand: string | undefined,
 ): string {
-	return prompt.render(reviewHeadlessRequestTemplate(variant), {
+	return renderChecked(reviewHeadlessRequestTemplate(variant), {
 		focus,
 		// Headless has no pre-built diff, so the prompt carries the command that
 		// makes one.
 		snapshotCommand,
 		...panelTemplateContext(panel, 1),
 		...untrackedTemplateContext(),
-	});
+	}, `review-headless-request.md (${variant})`);
 }
 
 /**

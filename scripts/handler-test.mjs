@@ -152,7 +152,7 @@ function expect(cond, label) {
  * false-success it exists to prevent. Raise it when adding a block; lower it
  * only when deliberately removing coverage.
  */
-const EXPECTED_MIN_CHECKS = 305;
+const EXPECTED_MIN_CHECKS = 350;
 process.on("uncaughtException", (err) => {
 	console.error(`\nHARNESS CRASHED after ${checks} checks: ${err?.stack ?? err}`);
 	process.exit(1);
@@ -1979,6 +1979,106 @@ diff --git a/real.ts b/real.ts
 	expect(!/two passes/.test(onePass), "26u: single-pass run never mentions two passes");
 	const twoPass = rc.buildReviewPrompt("m", gapStats, gapDiff, { ...panelCtx, crossCheck: true }, { variant: "sharded" });
 	expect(/two passes/.test(twoPass), "26v: cross-checked run does describe two passes");
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// 27. Template/context contract.
+//
+// vendor/template.ts resolves every path with `Object.hasOwn(record, key) ?
+// record[key] : undefined`, and its `strict` option is declared in the type
+// (line 32) and never honoured — so a variable no builder supplies renders as
+// the empty string, silently. That is how the custom-instructions prompt shipped
+// an instruction with no text, and how the headless prompt shipped fan-out
+// mechanics with no scope. review-core wraps each render context in a Proxy that
+// makes such a lookup throw, using the engine's own resolver rather than a
+// second copy of the grammar.
+//
+// Both halves matter, so both are asserted: the guard must not fire on any real
+// prompt (a guard that cries wolf gets removed), and it must fire on a context
+// that is genuinely missing a key.
+// ────────────────────────────────────────────────────────────────────────────
+{
+	const rcNS4 = await import("../src/review-core.ts");
+	const rc4 = rcNS4.default ?? rcNS4;
+	const vcsNS4 = await import("../src/vcs.ts");
+	const vcs4 = vcsNS4.default ?? vcsNS4;
+
+	const small = `diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n@@ -1 +1,2 @@\n a\n+b\ndiff --git a/p.lock b/p.lock\n--- a/p.lock\n+++ b/p.lock\n@@ -1 +1,2 @@\n x\n+y\ndiff --git a/b.dat b/b.dat\nnew file mode 100644\nBinary files /dev/null and b/b.dat differ\n`;
+	// 60+ files pushes past MAX_FILES_FOR_INLINE_DIFF, exercising the skipDiff /
+	// hunksPreview branch, which reads a different set of variables.
+	const big =
+		small +
+		Array.from(
+			{ length: 60 },
+			(_, i) => `diff --git a/f${i}.ts b/f${i}.ts\n--- a/f${i}.ts\n+++ b/f${i}.ts\n@@ -1 +1,2 @@\n a\n+b${i}\n`,
+		).join("");
+	const smallStats = rc4.parseDiff(small);
+	const bigStats = rc4.parseDiff(big);
+	const gaps4 = rc4.unreviewablePaths(smallStats);
+	const cmd4 = vcs4.snapshotCommandFor(process.cwd());
+
+	let rendered = 0;
+	for (const cfg of [
+		{ families: 1, shardDepth: "auto", crossCheck: false, confirmAboveRuns: 12, modelsText: "- `p/m`" },
+		{ families: 3, shardDepth: "auto", crossCheck: false, confirmAboveRuns: 12, modelsText: "- `p/m`" },
+		{ families: 3, shardDepth: 4, crossCheck: true, confirmAboveRuns: 2, modelsText: "- `p/m`" },
+	]) {
+		for (const variant of ["sharded", "panel"]) {
+			const cases = {
+				review: () => rc4.buildReviewPrompt("m", smallStats, small, cfg, { variant, untracked: gaps4 }),
+				"review-nogaps": () => rc4.buildReviewPrompt("m", smallStats, small, cfg, { variant }),
+				"review-extra": () =>
+					rc4.buildReviewPrompt("m", smallStats, small, cfg, { variant, additionalInstructions: "focus auth" }),
+				"review-skipdiff": () => rc4.buildReviewPrompt("m", bigStats, big, cfg, { variant }),
+				custom: () => rc4.buildCustomReviewPrompt("do it", cfg, gaps4, variant),
+				headless: () => rc4.buildHeadlessReviewPrompt(cfg, "auth", variant, cmd4),
+				"headless-norepo": () => rc4.buildHeadlessReviewPrompt(cfg, undefined, variant, undefined),
+			};
+			for (const [name, build] of Object.entries(cases)) {
+				let error;
+				try {
+					build();
+					rendered++;
+				} catch (err) {
+					error = err;
+				}
+				expect(error === undefined, `27-${name}/${variant}/f${cfg.families}: renders (${error?.message ?? "ok"})`);
+			}
+		}
+	}
+	expect(rendered === 42, `27a: every prompt path rendered (${rendered}/42)`);
+
+	// The other half: a context genuinely missing a key must throw, not render
+	// empty. Exercised through a real template rather than a synthetic one.
+	const tpl = readFileSync(new URL("../src/prompts/pi-reviewer-instructions.md", import.meta.url), "utf8");
+	expect(tpl.includes("{{contextInstruction}}"), "27b: fixture template still reads contextInstruction");
+	//
+	// Tested at the contract's real boundary. The builders always spread a
+	// COMPLETE context (panelTemplateContext sets every key, `undefined` included),
+	// so no builder call can omit one — a violation only arrives by editing a
+	// template to read something new, which is what happened twice. So render a
+	// real template against a deliberately incomplete context.
+	//
+	// Note the guard fires on paths the renderer actually EVALUATES, not on every
+	// name mentioned; a key read only inside an unrendered branch is not a
+	// violation. That is why the 42-combination loop above exists.
+	const ovNS = await import("../src/overrides.ts");
+	const ov = ovNS.default ?? ovNS;
+	let threw;
+	try {
+		rc4.renderChecked(ov.reviewRequestTemplate("sharded"), { mode: "m" }, "fixture");
+	} catch (err) {
+		threw = err;
+	}
+	expect(threw !== undefined, "27c: a template reading an unsupplied key throws instead of rendering empty");
+	expect(
+		threw !== undefined && /does not supply/.test(threw.message),
+		`27d: the error explains the contract (${threw?.message?.slice(0, 70)})`,
+	);
+	expect(
+		threw !== undefined && threw.constructor.name === "PromptContractError",
+		`27e: it is a PromptContractError, so index.ts reports it cleanly (${threw?.constructor?.name})`,
+	);
 }
 
 // ── cleanup ────────────────────────────────────────────────────────────────
