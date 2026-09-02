@@ -362,16 +362,27 @@ export function mergeBase(cwd: string, base: string, head: string): string | und
  * payload it was sent.
  */
 export function reproduceSnapshotCommand(base: DiffBase): string {
-	const readTree = base === null ? "git read-tree --empty" : `git read-tree ${base}`;
+	const readTree = base === null ? "read-tree --empty" : `read-tree ${base}`;
 	const diffBase = base === null ? "" : `${base} `;
-	// Carries DIFF_FORMAT_FLAGS for the same reason the payload does. Seats run
-	// this in the user's own repo under the user's own config, so without the flags
-	// a `diff.external` or `diff.relative` user's reviewers would get something
-	// other than — or less than — the diff they were told they were reproducing.
+	// Two details beyond the temp index:
+	//
+	// DIFF_FORMAT_FLAGS, for the same reason the payload carries them: seats run
+	// this in the user's own repo under the user's own config, so without them a
+	// `diff.external` or `diff.relative` user's reviewers get something other than
+	// — or less than — the diff they were told they were reproducing.
+	//
+	// `git -C <toplevel>`, because the paths we hand out are repo-root-relative
+	// (that is what `--name-only` reports, and what --no-relative pins it to) while
+	// git resolves PATHSPECS against the current directory. Launched from a
+	// subdirectory, a seat given `sub/x.ts` would look for `sub/sub/x.ts` and fetch
+	// nothing at all — an empty review that looks like a clean one. Running git at
+	// the top level makes both halves repo-relative.
+	const git = 'git -C "$R"';
 	return (
-		`D=$(mktemp -d) && GIT_INDEX_FILE=$D/index ${readTree} && ` +
-		`GIT_INDEX_FILE=$D/index git add -A && ` +
-		`GIT_INDEX_FILE=$D/index git diff --cached ${DIFF_FORMAT_FLAGS.join(" ")} ${diffBase}-- ` +
+		`D=$(mktemp -d) && R=$(git rev-parse --show-toplevel) && ` +
+		`GIT_INDEX_FILE=$D/index ${git} ${readTree} && ` +
+		`GIT_INDEX_FILE=$D/index ${git} add -A && ` +
+		`GIT_INDEX_FILE=$D/index ${git} diff --cached ${DIFF_FORMAT_FLAGS.join(" ")} ${diffBase}-- ` +
 		`<all your assigned paths>; rm -rf "$D"`
 	);
 }
@@ -389,6 +400,31 @@ export function reproduceSnapshotCommand(base: DiffBase): string {
  * both object formats.
  */
 export type DiffBase = string | null;
+
+/**
+ * Snapshot command for the HEADLESS path, where nothing has inspected the repo.
+ *
+ * The interactive paths know whether HEAD exists and pass a concrete base, but
+ * headless builds its prompt before touching git at all, so the command has to
+ * handle both cases itself — hence the `read-tree HEAD || read-tree --empty`
+ * fallback.
+ *
+ * Deliberately NOT `git diff HEAD`, which was the obvious-looking instruction
+ * and is wrong twice: it omits files that were never `git add`ed (reviewing
+ * those is this port's whole reason for staging a worktree, so telling the
+ * headless orchestrator to skip them contradicts the command's own contract),
+ * and it fails outright before the first commit.
+ */
+export function headlessSnapshotCommand(): string {
+	const git = 'git -C "$R"';
+	return (
+		`D=$(mktemp -d) && R=$(git rev-parse --show-toplevel) && ` +
+		`{ GIT_INDEX_FILE=$D/index ${git} read-tree HEAD 2>/dev/null || ` +
+		`GIT_INDEX_FILE=$D/index ${git} read-tree --empty; } && ` +
+		`GIT_INDEX_FILE=$D/index ${git} add -A && ` +
+		`GIT_INDEX_FILE=$D/index ${git} diff --cached ${DIFF_FORMAT_FLAGS.join(" ")}; rm -rf "$D"`
+	);
+}
 
 export interface NetDiff {
 	size: DiffSize;

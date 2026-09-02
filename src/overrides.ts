@@ -159,15 +159,26 @@ export function reviewCustomRequestTemplate(variant: ReviewVariant): string {
  * one path where nothing upstream of the prompt builds a diff, so without this
  * every launch instruction ("every file above", "paste that shard's diff hunks",
  * "the whole diff") refers to something that does not exist yet.
+ *
+ * The command comes from `vcs.headlessSnapshotCommand()` rather than being
+ * written out here, so there is one definition of "how this command snapshots a
+ * worktree" instead of a prose paraphrase that can drift from it.
  */
 const HEADLESS_SCOPE = [
 	"Review recent code changes in this repository.",
 	"",
-	"There is no file table or diff below — produce it yourself before fanning out:",
-	"run `git diff HEAD` for uncommitted work, or `git show HEAD` when the tree is",
-	"clean. Every reference to files or diff hunks in the section that follows means",
-	"that diff, and each reviewer's task must carry the hunks for its own files,",
-	"because a reviewer sees only its own task text.",
+	"There is no file table or diff below — produce it yourself before fanning out,",
+	"with this exact command (read-only: it writes a throwaway index, never yours):",
+	"",
+	"```bash",
+	"{{snapshotCommand}}",
+	"```",
+	"",
+	"Use that, not `git diff HEAD`: the plain form omits files that were never",
+	"`git add`ed, which this command reviews, and fails before the first commit.",
+	"Paths it reports are repo-root-relative. Every reference to files or diff hunks",
+	"in the section that follows means that diff, and each reviewer's task must carry",
+	"the hunks for its own files, because a reviewer sees only its own task text.",
 ].join("\n");
 
 export function reviewHeadlessRequestTemplate(variant: ReviewVariant): string {

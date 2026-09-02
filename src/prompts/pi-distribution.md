@@ -176,10 +176,19 @@ return {
     const seat = seats.find((s) => "pass1-" + s.key === r.key);
     return { seat: r.key, shardId: seat ? seat.shardId : null, output: r.output };
   }),
-  pass2: pass2.map((r) => ({ seat: r.key, output: r.output })),
+  // Filtered on ok, exactly like pass 1: a pass-2 child that failed still
+  // returns an entry, and its `output` is an error receipt. Mapping it
+  // unfiltered would present that receipt to synthesis as a cross-check
+  // result — a reviewer appearing to have reconsidered when it never ran.
+  pass2: pass2.filter((r) => r.ok).map((r) => ({ seat: r.key, output: r.output })),
   // Reviewed, but never cross-checked. Report as lower-confidence, not absent.
   uncrossChecked: noCrossCheck,
-  failed: pass1.filter((r) => !r.ok).map((r) => ({ seat: r.key, error: r.error ?? null })),
+  // Both passes, or a seat that failed the cross-check reads as fully
+  // cross-checked. Tag which pass died so synthesis can say so.
+  failed: [
+    ...pass1.filter((r) => !r.ok).map((r) => ({ seat: r.key, pass: 1, error: r.error ?? null })),
+    ...pass2.filter((r) => !r.ok).map((r) => ({ seat: r.key, pass: 2, error: r.error ?? null })),
+  ],
 };
 {{else}}
 // Single pass: no seat reads another's write-up, so these findings are
@@ -230,7 +239,7 @@ Sorted by severity and then by how many seats found each issue:
 - **Where families disagree, report the disagreement** with both positions and the file/lines. Do not pick a winner for tidiness: a split panel localises the genuinely ambiguous part of the change, which is exactly where a human should look.
 - Nothing here has been re-verified against a challenge, so treat a lone finding as a lead rather than a conclusion. Enable `"crossCheck"` in `/review config` if you want each claim re-examined against the code by its peers.
 {{/if}}
-- If `failed` is non-empty, name the missing seats instead of implying the panel was whole, and reduce the denominators accordingly.
+- If `failed` is non-empty, name the missing seats instead of implying the panel was whole, and reduce the denominators accordingly.{{#if crossCheck}} A `pass: 2` failure means that seat's pass-1 review stands but was never cross-checked — report it alongside `uncrossChecked`, not as a lost review.{{/if}}
 {{#if hasExcludedUntracked}}
 - State that the {{untrackedCount}} file(s) listed at the top were NOT reviewed. A verdict that silently covers part of a change is worse than one that admits its scope.
 {{/if}}

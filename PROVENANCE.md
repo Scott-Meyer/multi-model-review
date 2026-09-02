@@ -199,7 +199,12 @@ reports about its own coverage.
    the size probe and the path list as well as the payload, because
    `coverageGaps` compares those against each other and a disagreement invents
    or hides gaps. The command a reviewer is handed to reproduce the snapshot
-   carries the same flags, since seats run it under the same configuration.
+   carries the same flags, since seats run it under the same configuration — and
+   runs git at `$(git rev-parse --show-toplevel)`, because the paths handed to a
+   seat are repo-root-relative while git resolves pathspecs against the current
+   directory. Launched from a subdirectory, a seat given `sub/x.ts` would look for
+   `sub/sub/x.ts` and fetch nothing, which is an empty review that reads exactly
+   like a clean one.
 
 ## Forced adaptations (pi has no equivalent)
 

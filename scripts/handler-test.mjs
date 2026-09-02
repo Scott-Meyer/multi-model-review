@@ -152,7 +152,7 @@ function expect(cond, label) {
  * false-success it exists to prevent. Raise it when adding a block; lower it
  * only when deliberately removing coverage.
  */
-const EXPECTED_MIN_CHECKS = 290;
+const EXPECTED_MIN_CHECKS = 298;
 process.on("uncaughtException", (err) => {
 	console.error(`\nHARNESS CRASHED after ${checks} checks: ${err?.stack ?? err}`);
 	process.exit(1);
@@ -1750,6 +1750,54 @@ await withStubbedGh(async () => {
 		`26aa: a rename origin is not reported as untracked (got ${JSON.stringify(oddUntracked)})`,
 	);
 
+	// 26ab-ad: the snapshot command a seat is handed must actually fetch its files
+	// when pi was launched in a SUBDIRECTORY. Paths we hand out are repo-root
+	// relative (that is what --name-only reports) while git resolves pathspecs
+	// against the cwd, so `sub/x.ts` from inside `sub/` looked for `sub/sub/x.ts`
+	// and returned nothing — an empty review indistinguishable from a clean one.
+	// Executed for real, because this is a shell string no type checker can verify.
+	const subRepo = repo({ commits: 1 });
+	mkdirSync(join(subRepo, "sub"), { recursive: true });
+	writeFileSync(join(subRepo, "sub", "tracked.ts"), "export const t = 1;\n");
+	git(subRepo, ["add", "-A"]);
+	git(subRepo, ["commit", "-q", "-m", "seed sub"]);
+	writeFileSync(join(subRepo, "sub", "tracked.ts"), "export const t = 2;\n");
+	writeFileSync(join(subRepo, "sub", "untracked.ts"), "export const u = 1;\n");
+	const subCwd = join(subRepo, "sub");
+	const runSnapshot = (cmd, cwd, paths) =>
+		execFileSync("sh", ["-c", cmd.replace("<all your assigned paths>", paths)], {
+			cwd,
+			encoding: "utf8",
+			env: FIXTURE_ENV,
+		});
+	const subOut = runSnapshot(vcs2.reproduceSnapshotCommand("HEAD"), subCwd, "sub/tracked.ts sub/untracked.ts");
+	expect(subOut.includes("sub/tracked.ts"), "26ab: snapshot command fetches a modified file from a subdirectory");
+	expect(subOut.includes("sub/untracked.ts"), "26ac: snapshot command fetches a NEW file from a subdirectory");
+
+	// 26ad: and the unborn-HEAD form of the same command must run too.
+	const freshSub = mkdtempSync(join(tmpdir(), "mmr-fresh-sub-"));
+	repos.push(freshSub);
+	git(freshSub, ["init", "-q", "-b", "main"]);
+	git(freshSub, ["config", "user.email", "t@example.com"]);
+	git(freshSub, ["config", "user.name", "T"]);
+	mkdirSync(join(freshSub, "nested"), { recursive: true });
+	writeFileSync(join(freshSub, "nested", "first.ts"), "export const f = 1;\n");
+	const freshOut = runSnapshot(vcs2.reproduceSnapshotCommand(null), join(freshSub, "nested"), "nested/first.ts");
+	expect(freshOut.includes("nested/first.ts"), "26ad: unborn-HEAD snapshot command works from a subdirectory");
+
+	// 26ae-ag: the headless prompt must hand over a command that WORKS, and must
+	// not prescribe `git diff HEAD` — that omits never-added files (the whole point
+	// of this port's staging deviation) and fails before the first commit.
+	const headlessCmd = vcs2.headlessSnapshotCommand();
+	const headlessOut = execFileSync("sh", ["-c", headlessCmd], { cwd: subCwd, encoding: "utf8", env: FIXTURE_ENV });
+	expect(headlessOut.includes("sub/untracked.ts"), "26ae: headless snapshot command includes never-added files");
+	const headlessFresh = execFileSync("sh", ["-c", headlessCmd], {
+		cwd: join(freshSub, "nested"),
+		encoding: "utf8",
+		env: FIXTURE_ENV,
+	});
+	expect(headlessFresh.includes("nested/first.ts"), "26af: headless snapshot command works on an unborn HEAD");
+
 	// 26l-n: coverage gaps are honest in BOTH directions.
 	const rcNS = await import("../src/review-core.ts");
 	const rc = rcNS.default ?? rcNS;
@@ -1820,6 +1868,24 @@ diff --git a/real.ts b/real.ts
 	// wholesale, leaving fan-out mechanics and no scope at all.
 	const headless = rc.buildHeadlessReviewPrompt(panelCtx, "auth", "sharded");
 	expect(/recent code changes/i.test(headless), "26r: headless prompt states its review scope");
+	// It must also hand over the working command, not a paraphrase of one.
+	expect(headless.includes("GIT_INDEX_FILE"), "26r2: headless prompt carries the real snapshot command");
+	expect(
+		!/run `git diff HEAD`|^run `git diff HEAD`/m.test(headless),
+		"26r3: headless prompt does not prescribe plain `git diff HEAD`",
+	);
+
+	// 26r4-r5: cross-check synthesis must filter pass 2 on ok and report pass-2
+	// failures. Otherwise a failed cross-check's error receipt is presented as a
+	// reconsidered review, and the seat reads as fully cross-checked.
+	const ccPrompt = rc.buildReviewPrompt("m", gapStats, gapDiff, { ...panelCtx, crossCheck: true }, { variant: "sharded" });
+	expect(ccPrompt.includes("pass2.filter((r) => r.ok)"), "26r4: pass 2 results are filtered on ok");
+	// Matches the CODE line, not the prose that explains it — asserting on `pass: 2`
+	// alone passed off the synthesis bullet even with the failure line deleted.
+	expect(
+		ccPrompt.includes("pass2.filter((r) => !r.ok)"),
+		"26r5: pass-2 failures are collected into the failed report",
+	);
 
 	// 26s-t: a failed seat must not be reported as a completed review. `runId` is
 	// the resumable id and survives failure, so it is not a success flag; `ok` is.

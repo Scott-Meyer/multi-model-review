@@ -26,6 +26,7 @@ import {
 	reviewHeadlessRequestTemplate,
 	reviewRequestTemplate,
 } from "./overrides.ts";
+import { headlessSnapshotCommand } from "./vcs.ts";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -346,6 +347,10 @@ export function buildHeadlessReviewPrompt(
 ): string {
 	return prompt.render(reviewHeadlessRequestTemplate(variant), {
 		focus,
+		// Headless has no pre-built diff, so the prompt carries the command that
+		// makes one. Single-sourced from vcs so it cannot drift from what the
+		// interactive paths actually do.
+		snapshotCommand: headlessSnapshotCommand(),
 		...panelTemplateContext(panel, 1),
 		...untrackedTemplateContext(),
 	});
