@@ -402,20 +402,35 @@ export function reproduceSnapshotCommand(base: DiffBase): string {
 export type DiffBase = string | null;
 
 /**
- * Snapshot command for the HEADLESS path, where nothing has inspected the repo.
+ * Snapshot command for the HEADLESS path.
  *
- * The interactive paths know whether HEAD exists and pass a concrete base, but
- * headless builds its prompt before touching git at all, so the command has to
- * handle both cases itself — hence the `read-tree HEAD || read-tree --empty`
- * fallback.
+ * Headless builds its prompt before any review mode is chosen, and — unlike the
+ * interactive paths — returns before the `isGitRepo || isJjRepo` guard, so it
+ * never learns which VCS it is in. This function does that detection itself
+ * rather than emitting a git command and hoping.
  *
- * Deliberately NOT `git diff HEAD`, which was the obvious-looking instruction
- * and is wrong twice: it omits files that were never `git add`ed (reviewing
- * those is this port's whole reason for staging a worktree, so telling the
- * headless orchestrator to skip them contradicts the command's own contract),
- * and it fails outright before the first commit.
+ * Hoping was the previous behaviour and it failed silently, which is the worst
+ * available outcome: in a non-colocated jj workspace there is no `.git`, so
+ * `R=$(git rev-parse --show-toplevel)` fails, the `&&` chain short-circuits, and
+ * the trailing `rm -rf` makes the whole thing exit 0 with EMPTY stdout. A seat
+ * running it got no diff and no error — an empty review indistinguishable from a
+ * clean one, in a repo shape the README explicitly advertises.
+ *
+ * The git form is deliberately NOT `git diff HEAD`: that omits files never
+ * `git add`ed, which reviewing is this port's whole reason for staging a
+ * worktree, and it fails before the first commit.
+ *
+ * Returns undefined when the directory is neither, because headless `/review` is
+ * repo-agnostic by design (upstream's headless template makes no repo
+ * assumption, and this command is reachable outside a checkout). Emitting a git
+ * command there would reintroduce the same silent-empty failure it exists to
+ * remove; the prompt asks for scope in prose instead.
  */
-export function headlessSnapshotCommand(): string {
+export function snapshotCommandFor(cwd: string): string | undefined {
+	// jj first: a colocated workspace has BOTH .jj and .git, and there the jj
+	// working copy is the authoritative view of the change.
+	if (isJjRepo(cwd)) return "jj --ignore-working-copy --color=never diff --git";
+	if (!isGitRepo(cwd)) return undefined;
 	const git = 'git -C "$R"';
 	return (
 		`D=$(mktemp -d) && R=$(git rev-parse --show-toplevel) && ` +

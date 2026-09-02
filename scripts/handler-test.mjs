@@ -152,7 +152,7 @@ function expect(cond, label) {
  * false-success it exists to prevent. Raise it when adding a block; lower it
  * only when deliberately removing coverage.
  */
-const EXPECTED_MIN_CHECKS = 298;
+const EXPECTED_MIN_CHECKS = 305;
 process.on("uncaughtException", (err) => {
 	console.error(`\nHARNESS CRASHED after ${checks} checks: ${err?.stack ?? err}`);
 	process.exit(1);
@@ -1560,6 +1560,49 @@ await withStubbedGh(async () => {
 	}
 }
 
+/**
+ * Stub `jj` on PATH.
+ *
+ * jj is not installed in CI or on most dev machines, so the jj paths had zero
+ * coverage — which is how a git-only snapshot command shipped for a repo shape
+ * the README advertises. Stubbing is what makes them testable at all.
+ *
+ * This works only because src/vcs.ts builds its child env per call; a snapshot
+ * taken at module load would ignore this PATH entirely.
+ */
+const JJ_STUB_DIFF = `diff --git a/src/jj-only.ts b/src/jj-only.ts
+index 111..222 100644
+--- a/src/jj-only.ts
++++ b/src/jj-only.ts
+@@ -1,2 +1,2 @@
+ const kept = 1;
+-const removed = 2;
++const added = 3;
+`;
+function withStubbedJj(fn) {
+	const binDir = mkdtempSync(join(tmpdir(), "mmr-stub-jj-"));
+	repos.push(binDir);
+	const script = `#!/bin/sh
+# stub jj: \`root\` marks the dir as a jj repo, \`diff --git\` returns a diff.
+for a in "$@"; do
+  if [ "$a" = "root" ]; then echo "/stub/jj/root"; exit 0; fi
+  if [ "$a" = "diff" ]; then
+    cat <<'DIFF'
+${JJ_STUB_DIFF}DIFF
+    exit 0
+  fi
+done
+echo "stub jj: unexpected args: $*" >&2
+exit 1
+`;
+	writeFileSync(join(binDir, "jj"), script, { mode: 0o755 });
+	const previousPath = process.env.PATH;
+	process.env.PATH = `${binDir}:${previousPath}`;
+	return Promise.resolve(fn()).finally(() => {
+		process.env.PATH = previousPath;
+	});
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // 26. Regressions. Each check below corresponds to a defect that shipped and
 //     was found in review; they assert observable behaviour (a rendered line, a
@@ -1788,7 +1831,7 @@ await withStubbedGh(async () => {
 	// 26ae-ag: the headless prompt must hand over a command that WORKS, and must
 	// not prescribe `git diff HEAD` — that omits never-added files (the whole point
 	// of this port's staging deviation) and fails before the first commit.
-	const headlessCmd = vcs2.headlessSnapshotCommand();
+	const headlessCmd = vcs2.snapshotCommandFor(subCwd);
 	const headlessOut = execFileSync("sh", ["-c", headlessCmd], { cwd: subCwd, encoding: "utf8", env: FIXTURE_ENV });
 	expect(headlessOut.includes("sub/untracked.ts"), "26ae: headless snapshot command includes never-added files");
 	const headlessFresh = execFileSync("sh", ["-c", headlessCmd], {
@@ -1797,6 +1840,39 @@ await withStubbedGh(async () => {
 		env: FIXTURE_ENV,
 	});
 	expect(headlessFresh.includes("nested/first.ts"), "26af: headless snapshot command works on an unborn HEAD");
+
+	// 26ag-ak: jj workspaces. The headless branch returns before the
+	// isGitRepo/isJjRepo guard, so it never learned which VCS it was in and always
+	// emitted a git command. In a non-colocated jj workspace there is no .git, so
+	// `R=$(git rev-parse --show-toplevel)` fails, the && chain short-circuits, and
+	// the trailing `rm -rf` makes the whole command exit 0 with EMPTY output — a
+	// seat got no diff and no error, in a repo shape the README advertises.
+	await withStubbedJj(async () => {
+		const jjCmd = vcs2.snapshotCommandFor("/tmp");
+		expect(jjCmd !== undefined && jjCmd.startsWith("jj "), `26ag: jj workspace gets a jj command (got ${jjCmd})`);
+		expect(
+			jjCmd !== undefined && !jjCmd.includes("git "),
+			"26ah: the jj snapshot command contains no git invocation",
+		);
+		expect(jjCmd !== undefined && jjCmd.includes("--color=never"), "26ai: jj diff is forced non-colour for the parser");
+
+		// And the rendered headless prompt must carry it.
+		reset();
+		await command.def.handler("", makeCtx({ hasUI: false, cwd: "/tmp" }));
+		const jjPrompt = sent[0] ?? "";
+		expect(/jj --ignore-working-copy/.test(jjPrompt), "26aj: headless prompt in a jj workspace carries the jj command");
+		expect(!jjPrompt.includes("GIT_INDEX_FILE"), "26ak: headless prompt in a jj workspace has no git snapshot command");
+	});
+
+	// 26al: outside any checkout there is no command to give, and inventing a git
+	// one would reintroduce the same silent-empty failure. Headless is repo-agnostic
+	// by design (upstream's template makes no repo assumption), so it must say so.
+	expect(vcs2.snapshotCommandFor("/tmp") === undefined, "26al: a non-checkout yields no snapshot command");
+	reset();
+	await command.def.handler("", makeCtx({ hasUI: false }));
+	const barePrompt = sent[0] ?? "";
+	expect(!barePrompt.includes("GIT_INDEX_FILE"), "26am: non-checkout headless prompt invents no git command");
+	expect(/not a git or jj checkout/.test(barePrompt), "26an: non-checkout headless prompt says so plainly");
 
 	// 26l-n: coverage gaps are honest in BOTH directions.
 	const rcNS = await import("../src/review-core.ts");
@@ -1866,7 +1942,7 @@ diff --git a/real.ts b/real.ts
 	// 26r: the headless prompt must still say WHAT to review. Upstream's
 	// distribution line carried "for recent code changes" and was replaced
 	// wholesale, leaving fan-out mechanics and no scope at all.
-	const headless = rc.buildHeadlessReviewPrompt(panelCtx, "auth", "sharded");
+	const headless = rc.buildHeadlessReviewPrompt(panelCtx, "auth", "sharded", vcs2.snapshotCommandFor(subRepo));
 	expect(/recent code changes/i.test(headless), "26r: headless prompt states its review scope");
 	// It must also hand over the working command, not a paraphrase of one.
 	expect(headless.includes("GIT_INDEX_FILE"), "26r2: headless prompt carries the real snapshot command");

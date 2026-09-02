@@ -26,7 +26,6 @@ import {
 	reviewHeadlessRequestTemplate,
 	reviewRequestTemplate,
 } from "./overrides.ts";
-import { headlessSnapshotCommand } from "./vcs.ts";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -340,17 +339,23 @@ export function buildCustomReviewPrompt(
 	});
 }
 
+/**
+ * `snapshotCommand` is passed in rather than computed here: it depends on which
+ * VCS the working directory actually uses, and this module deliberately does no
+ * I/O. The caller has `ctx.cwd`; see vcs.snapshotCommandFor.
+ */
 export function buildHeadlessReviewPrompt(
 	panel: PanelContext,
 	focus: string | undefined,
 	variant: ReviewVariant,
+	/** Undefined when cwd is neither a git nor a jj checkout. */
+	snapshotCommand: string | undefined,
 ): string {
 	return prompt.render(reviewHeadlessRequestTemplate(variant), {
 		focus,
 		// Headless has no pre-built diff, so the prompt carries the command that
-		// makes one. Single-sourced from vcs so it cannot drift from what the
-		// interactive paths actually do.
-		snapshotCommand: headlessSnapshotCommand(),
+		// makes one.
+		snapshotCommand,
 		...panelTemplateContext(panel, 1),
 		...untrackedTemplateContext(),
 	});

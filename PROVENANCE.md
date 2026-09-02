@@ -204,7 +204,10 @@ reports about its own coverage.
    seat are repo-root-relative while git resolves pathspecs against the current
    directory. Launched from a subdirectory, a seat given `sub/x.ts` would look for
    `sub/sub/x.ts` and fetch nothing, which is an empty review that reads exactly
-   like a clean one.
+   like a clean one. The headless path returns before the git/jj guard, so it
+   resolves the VCS itself: a jj workspace gets `jj diff --git`, and a directory
+   that is neither gets no command at all rather than a git one that would exit 0
+   with empty output.
 
 ## Forced adaptations (pi has no equivalent)
 

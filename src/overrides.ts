@@ -160,25 +160,35 @@ export function reviewCustomRequestTemplate(variant: ReviewVariant): string {
  * every launch instruction ("every file above", "paste that shard's diff hunks",
  * "the whole diff") refers to something that does not exist yet.
  *
- * The command comes from `vcs.headlessSnapshotCommand()` rather than being
- * written out here, so there is one definition of "how this command snapshots a
- * worktree" instead of a prose paraphrase that can drift from it.
+ * The command is supplied by the caller (`vcs.snapshotCommandFor(ctx.cwd)`)
+ * rather than written out here, so there is one definition of "how this command
+ * snapshots a worktree" instead of a prose paraphrase that can drift from it —
+ * and so it can be the jj command in a jj workspace, or absent entirely outside
+ * a checkout.
  */
 const HEADLESS_SCOPE = [
 	"Review recent code changes in this repository.",
 	"",
-	"There is no file table or diff below — produce it yourself before fanning out,",
-	"with this exact command (read-only: it writes a throwaway index, never yours):",
+	"There is no file table or diff below — produce it yourself before fanning out.",
+	"{{#if snapshotCommand}}",
+	"Use this exact command (read-only: it writes a throwaway index, never yours):",
 	"",
 	"```bash",
 	"{{snapshotCommand}}",
 	"```",
 	"",
-	"Use that, not `git diff HEAD`: the plain form omits files that were never",
-	"`git add`ed, which this command reviews, and fails before the first commit.",
-	"Paths it reports are repo-root-relative. Every reference to files or diff hunks",
-	"in the section that follows means that diff, and each reviewer's task must carry",
-	"the hunks for its own files, because a reviewer sees only its own task text.",
+	"Use that rather than a plain `git diff HEAD`, which omits files that were never",
+	"`git add`ed — this command reviews those — and fails before the first commit.",
+	"Paths it reports are relative to the repository root.",
+	"{{else}}",
+	"This directory is not a git or jj checkout, so there is no snapshot command to",
+	"give you. Establish the scope yourself before fanning out, and state plainly",
+	"what you reviewed; do not invent a diff.",
+	"{{/if}}",
+	"",
+	"Every reference to files or diff hunks in the section that follows means that",
+	"diff, and each reviewer's task must carry the hunks for its own files, because a",
+	"reviewer sees only its own task text.",
 ].join("\n");
 
 export function reviewHeadlessRequestTemplate(variant: ReviewVariant): string {

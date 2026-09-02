@@ -475,7 +475,14 @@ export default function reviewExtension(pi: ExtensionAPI) {
 				}
 
 				if (!ctx.hasUI) {
-					pi.sendUserMessage(buildHeadlessReviewPrompt(panel, extraInstructions, variant));
+					// Detect the VCS here: this branch returns before the
+					// isGitRepo/isJjRepo guard below, and the snapshot command the
+					// prompt hands to reviewers has to match what the repo actually
+					// is. A git command in a non-colocated jj workspace exits 0 with
+					// empty output, which reads as "no changes" rather than an error.
+					pi.sendUserMessage(
+						buildHeadlessReviewPrompt(panel, extraInstructions, variant, vcs.snapshotCommandFor(ctx.cwd)),
+					);
 					return;
 				}
 
