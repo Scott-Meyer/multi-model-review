@@ -152,7 +152,7 @@ function expect(cond, label) {
  * false-success it exists to prevent. Raise it when adding a block; lower it
  * only when deliberately removing coverage.
  */
-const EXPECTED_MIN_CHECKS = 380;
+const EXPECTED_MIN_CHECKS = 420;
 process.on("uncaughtException", (err) => {
 	console.error(`\nHARNESS CRASHED after ${checks} checks: ${err?.stack ?? err}`);
 	process.exit(1);
@@ -2305,6 +2305,50 @@ diff --git a/real.ts b/real.ts
 		const out = await runEmitted("panel-multimodal.ts", decl, fakeRuns(["antagonist"]));
 		expect(out.reviews.length === 1 && out.reviews[0].seat === "claude", "28z: emitted multimodal script runs");
 		expect(out.failed.length === 1 && out.failed[0].seat === "antagonist", "28z2: emitted multimodal reports failures");
+	}
+
+	// 28af-ai: compile and run the EXACT text script() produces — placeholder
+	// declarations included. Everything above replaces the declaration with test
+	// data, so the real PLACEHOLDER bytes were never parsed: a stray bracket or a
+	// bad template escape in one would sail past the behavioural tests and the
+	// prompt checks, which only use includes(). The placeholders declare empty
+	// collections, so the whole artifact runs as-is against a fake `runs` and every
+	// variant must come back with nothing to review rather than throwing.
+	for (const [name, mod] of [
+		["upstream-shard", upstream],
+		["panel-single-pass", single],
+		["panel-cross-check", xcheck],
+		["panel-multimodal", multimodal],
+	]) {
+		const text = mod.script();
+		let compiled;
+		let compileError;
+		try {
+			compiled = new AsyncFunction("runs", text);
+		} catch (err) {
+			compileError = err;
+		}
+		expect(compileError === undefined, `28af-${name}: script() parses as JavaScript (${compileError?.message ?? "ok"})`);
+		if (compileError) continue;
+
+		const runs = fakeRuns([]);
+		let result;
+		let runError;
+		try {
+			result = await compiled(runs);
+		} catch (err) {
+			runError = err;
+		}
+		expect(runError === undefined, `28ag-${name}: script() runs end to end (${runError?.message ?? "ok"})`);
+		expect(
+			runError === undefined && result !== null && typeof result === "object",
+			`28ah-${name}: script() returns a result object`,
+		);
+		// Empty seats mean nothing was launched, so nothing may be claimed.
+		expect(
+			runError === undefined && JSON.stringify(result ?? {}).replace(/\[\]|\{\}|"[a-zA-Z0-9]+":|[,{}]/g, "").trim() === "",
+			`28ai-${name}: an empty seat list yields no reviews (${JSON.stringify(result)})`,
+		);
 	}
 
 	// And the right variant reaches the right prompt.
