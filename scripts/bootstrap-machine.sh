@@ -95,18 +95,22 @@ if (has) {
 '
 
 echo "==> reviewer agents"
-# The /review panel fans out to agents by name; ship the example definitions
-# alongside. Never overwrite: an existing file means the user customized it.
-mkdir -p "$AGENTS_DIR"
-for f in "$CHECKOUT"/agents/*.md; do
-  name="$(basename "$f")"
-  if [ -f "$AGENTS_DIR/$name" ]; then
-    info "$name already present — leaving yours alone"
-  else
-    cp "$f" "$AGENTS_DIR/$name"
-    info "installed $name (edit its model: line to your provider registry)"
+# Nothing to copy. The agents ship inside the package and pi-subagents discovers
+# them from the manifest (pi.subagents.agents), so a plain install is enough.
+# Copying them into ~/.pi would create user-scope duplicates that shadow the
+# package copies and then silently go stale on every update.
+info "bundled with the package — no copy needed (pi.subagents.agents)"
+if [ -d "$AGENTS_DIR" ]; then
+  stale=""
+  for f in "$CHECKOUT"/agents/*.md; do
+    name="$(basename "$f")"
+    [ -f "$AGENTS_DIR/$name" ] && stale="$stale $name"
+  done
+  if [ -n "$stale" ]; then
+    info "note: older hand-copied versions exist in $AGENTS_DIR and will SHADOW the package:$stale"
+    info "      delete them to track package updates, or keep them if you customised them"
   fi
-done
+fi
 
 echo "==> done"
 info "restart pi, then run /review in any git repo"

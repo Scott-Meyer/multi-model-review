@@ -1,175 +1,241 @@
 # multi-model-review
 
-A `/review` command for [pi](https://github.com/earendil-works/pi) that fans
-your diff out to a **diverse multi-model reviewer panel** — one model family
-per seat, picked fresh from whatever your session can reach, each running as
-its own reviewer subagent — then cross-checks them against each other and
-synthesizes one verdict.
+A faithful port of [oh-my-pi](https://github.com/can1357/oh-my-pi)'s bundled
+`/review` command onto [pi](https://github.com/earendil-works/pi) — verbatim
+upstream prompts, diff logic and heuristics — extended along exactly one axis:
+**every shard of the diff is reviewed by several different model families,
+which then cross-check each other.**
 
 > Not affiliated with, endorsed by, or supported by oh-my-pi / Stencil Labs,
-> Inc., or by the pi project / Earendil Works. This is a port of oh-my-pi's
-> bundled `/review` command (same interactive menu, same diff-stat computation,
-> same noise-file exclusion list) with the fan-out reimplemented on pi's own
-> subagent machinery. See `PROVENANCE.md` for the file-level breakdown.
+> Inc., or by the pi project / Earendil Works.
+
+"Faithful" here is a checkable claim, not a compliment we paid ourselves:
+`npm run check:upstream` re-downloads the pinned upstream tarballs and fails if
+any verbatim file has drifted in either direction. See `PROVENANCE.md` for the
+file-by-file breakdown, `./UPSTREAM` for the pin.
 
 ## What it does
 
-Run `/review` in any git repo and pick a mode:
+Run `/review` in a git (or jj) repo and pick a mode — upstream's menu, in
+upstream's order:
 
-1. **Review against a base branch** (PR style) — everything since your branch
-   forked, committed *and* uncommitted. The fork point is pinned as a concrete
-   merge-base sha up front, so a fast-moving trunk can't shift the reviewed
-   range underneath you.
-2. **Review uncommitted changes** — staged + unstaged + untracked.
+1. **Review against a base branch** (PR style) — the merge base against your
+   current branch, so commits that exist only on the base are excluded.
+   **Uncommitted work and brand-new files are included** — the review is the net
+   `base` → *what is on disk* state, built through a throwaway git index so it is
+   accurate even for files you have `git rm --cached`ed. Mid-change, a
+   committed-only diff reviews a snapshot that no longer exists: a change you
+   committed and then reverted does not appear at all. No `git add` required. Use
+   `/review <PR url>` when you want only what is pushed.
+
+   Choosing the base is a filtered, fixed-height list — type to narrow it live:
+
+   ```
+   Base branch for `feature`
+     filter: prod  (2 of 247)
+
+   → release/prod-2025                remote · 3 hours ago
+     release/prod-2024                local  · 6 months ago
+
+     ↑↓ move · type to filter · ⌫ delete · ctrl+u clear · enter select · esc cancel
+   ```
+
+   Twelve rows at a time regardless of how many branches you have, matched by
+   substring anywhere in the name, local and remote, newest first. Outside a
+   terminal it degrades to one prompt that accepts an exact ref or a filter.
+
+2. **Review uncommitted changes** — staged + unstaged + brand-new files. You do
+   not need to `git add` anything first; new files are synthesised into the diff
+   as additions. Anything git cannot diff as text (binaries) is named in the
+   review request as an explicit coverage gap.
 3. **Review a specific commit** — picked from your last 20.
 4. **Custom review instructions.**
 
-Lock files, minified/generated code, build output, vendor dirs, images,
-fonts, and binaries are stripped from the diff before reviewers see it.
+Plus: pass a GitHub PR URL (`/review https://github.com/o/r/pull/42`) to review
+that PR directly, and PRs mentioned earlier in the conversation appear at the
+top of the menu automatically.
 
-Then the actual review runs in **two passes**, driven by the
-[`pi-subagents`](https://www.npmjs.com/package/pi-subagents) `subagent` tool:
+Lock files, minified/generated code, build output, vendor dirs, images, fonts
+and binaries are stripped before reviewers see the diff.
 
-- **Pass 1 (independent).** Each seat of the panel looks at the diff
-  independently, with fresh context, on its own model. For big diffs each
-  reviewer pulls the diff itself rather than having it pasted in.
-- **Pass 2 (cross-check).** Each core reviewer's own pass-1 run is resumed and
-  handed *all* pass-1 write-ups, unlabeled and anonymized — including its own —
-  and explicitly told to distrust all of them and re-verify against the real
-  code before agreeing.
-- **Synthesis.** The session synthesizes one report from the pass-2 outputs,
-  sorted by severity then confidence, flagging anything walked back between
-  passes or still in disagreement. One overall verdict.
+## Cost, first
 
-The extension itself never runs a review — it computes the diff, filters the
-noise, and injects a prompt into the current session. The panel runs through
-your normal `subagent` tool as a background workflow; you get a report when
-pass 2 finishes.
+Model invocations are `shardDepth × families`, **doubled when `crossCheck` is on**
+because every surviving seat is resumed for the second pass. Everything else in
+this README is downstream of that arithmetic.
 
-## The panel: personas, and models picked fresh every time
+| what you want | config | invocations (N = upstream's shard count) |
+| --- | --- | --- |
+| **omp parity** (default, cheapest) | none | N — one model, one pass, same as omp |
+| a second opinion everywhere | `{"families": 2}` | 2N |
+| three-way, no cross-examination | `{"families": 3}` | 3N |
+| adversarial cross-examination | `{"families": 3, "crossCheck": true}` | **6N** |
+| every family + personas | `/review-multi-modal` | families + persona seats, one pass |
 
-Nothing in this package names a model. At review time the command reads the
-models this session can actually reach (session-scoped list if you set one,
-otherwise the whole authed registry) and the prompt picks **one model family
-per seat** — Claude vs GPT vs Gemini vs GLM vs Qwen, the totally different
-lineages — with two routes to the same underlying model (e.g. the same family
-at two context sizes) counting as one family. Breadth beats "best": an
-older model from a family nobody else on the panel is using is worth more
-than a second pick from the same family. If fewer distinct families exist
-than seats, the panel shrinks — several seats on one family is a single-model
-review with extra steps.
+`confirmAboveRuns` (default 12) is the guard, and it is compared against the
+*doubled* figure — so a 3×3 cross-checked run reports "up to 18 model
+invocations" and asks, rather than quietly counting 9 seats. It never silently
+reduces N or K (either would change what gets reviewed), and it never fires on a
+default run, because upstream never pauses.
 
-The seats are personas, not models: three identically-instructed
-`reviewer-primary` seats (pure model diversity), a blunt Linus-style seat, a
-measured Dan-Luu-style seat, and a deliberately pass-1-only antagonist.
-Personas ship unpinned — each seat takes its model from the panel pick at
-launch.
+## Two commands
+
+### `/review` — upstream's review, by default exactly
+
+With no config, `/review` is omp's `/review`: files split across reviewer
+subagents by upstream's diff-weight heuristic, **one model, one pass**, one
+synthesised verdict. The rendered prompt is upstream's own wording, with `task`
+→ `subagent` because that is pi's tool. Nothing about a default run is this
+package's invention.
+
+The multi-model panel is opt-in, via `/review config`:
+
+```json
+{
+	"families": 1,
+	"shardDepth": "auto",
+	"crossCheck": false,
+	"confirmAboveRuns": 12,
+	"exclude": []
+}
+```
+
+- **`families`** (1–8) — **K**: how many distinct model families review *each*
+  shard. `1` is upstream. Raise it and every shard gets read independently by
+  different lineages, so a bug one family is blind to has K chances to be caught.
+- **`shardDepth`** (`"auto"` or 1–32) — **N**: how finely to fork the files.
+  `"auto"` is upstream's heuristic (1 → 16 by diff weight); a number overrides it
+  and the prompt says so.
+- **`crossCheck`** — a second pass where each seat re-examines its peers'
+  write-ups against the real code. Off by default; upstream has no second pass.
+  Requires `families` ≥ 2.
+- **`confirmAboveRuns`** — when planned **invocations** exceed this, `/review`
+  states the arithmetic and asks before launching. Planned invocations are
+  `N × K`, **doubled when `crossCheck` is on** (each seat is resumed for the
+  second pass) — so set this against the doubled figure, not the seat count. A
+  threshold, not a cap: it never silently reduces N or K, because either would
+  change what gets reviewed. It applies only once you have opted in: a default
+  run never pauses, because upstream never does, and upstream's own heuristic can
+  recommend 16 shards on a large diff.
+- **`exclude`** — globs against `provider/model-id` to shrink the candidate pool.
+
+Total reviewers is `N × K`, and planned *invocations* are that doubled when
+`crossCheck` is on. Nothing in the package names a model: candidates are read
+from your session's registry at review time and auth-filtered.
+
+### `/review-multi-modal` — the panel
+
+Every model family your session can reach reviews the **whole** diff — no
+sharding — plus extra persona seats (`reviewer-linus`, `reviewer-danluu`,
+`reviewer-antagonist`) on the cheapest families. One pass, all results back to
+the main agent for synthesis.
+
+Because every seat is independent and no seat reads another's write-up,
+agreement counts mean exactly what they say: convergence between different
+lineages is uncontaminated corroboration, which is far better evidence than any
+single model's self-reported confidence.
+
+The extension cannot see prices — the registry exposes provider, id and name
+only — so the agent picks which families are cheap and must say which it chose,
+letting you correct it. No stale price table ships here.
 
 ## Install
 
-**Running from an editable checkout** (recommended if you intend to modify it —
-the checkout *is* the install, so edits are live and updates are `git pull`):
+**Editable checkout** (recommended if you intend to modify it — the checkout
+*is* the install, so edits are live and updates are `git pull`):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Scott-Meyer/multi-model-review/main/scripts/bootstrap-machine.sh | bash
 ```
 
 That clones to `$HOME/git/multi-model-review` and registers it as a local-path
-package in `~/.pi/agent/settings.json`. Because pi resolves that path relative
-to `~/.pi/agent`, the same settings entry works on every machine.
+package in `~/.pi/agent/settings.json`.
 
-**Or install it as a managed pi package:**
+**Or as a managed pi package:**
 
 ```bash
 pi install npm:multi-model-review
-pi install git:github.com/Scott-Meyer/multi-model-review@v0.1.0
 ```
 
-Note: with a managed install, edits must go through a publish round-trip —
-use the checkout if you want to hack on it.
-
-**Or add it to `packages` in `~/.pi/agent/settings.json`** (paths are resolved
+**Or add it to `packages` in `~/.pi/agent/settings.json`** (paths resolve
 relative to the agent dir):
 
 ```json
 { "packages": ["../../git/multi-model-review"] }
 ```
 
-Requires the [`pi-subagents`](https://www.npmjs.com/package/pi-subagents)
-package (the panel runs through its `subagent` tool) and Node **22.19+**,
-matching pi itself.
+Requires [`pi-subagents`](https://www.npmjs.com/package/pi-subagents) (the panel
+runs through its `subagent` tool) and Node **22.19+**, matching pi itself.
 
-## Required reviewer agents
+## Reviewer agents — nothing to install by hand
 
-The command fans out to pi agents named `reviewer-primary`, `reviewer-linus`,
-`reviewer-danluu`, and `reviewer-antagonist` (pass 1 only). These are example
-definitions, shipped in the package's `agents/` directory — install them by
-copying them into `~/.pi/agent/agents/`:
+The five reviewer agents ship *inside* the package and are discovered
+automatically, because the manifest exposes them to `pi-subagents`:
 
-```bash
-# from a checkout of this repo:
-cp agents/*.md ~/.pi/agent/agents/
-
-# or from a managed install (pi caches npm and git packages separately):
-cp ~/.pi/agent/npm/node_modules/multi-model-review/agents/*.md ~/.pi/agent/agents/
-# — or, for a `pi install git:` —
-cp ~/.pi/agent/git/github.com/Scott-Meyer/multi-model-review/agents/*.md ~/.pi/agent/agents/
+```json
+{ "pi": { "subagents": { "agents": ["./agents"] } } }
 ```
 
-`/review` does not work without these agents — the panel fans out to them by
-name. (A `pi install` cannot ship them into your agents dir itself; the copy
-is the opt-in, so an installed update never clobbers your customized
-reviewers.)
+So `pi install npm:multi-model-review` is sufficient: **no manual file copying
+and no hand-placed files**, which matters for CI where no one is around to run a
+copy step. (`pi install` does of course write the package under `~/.pi`, and
+`/review config` saves there if you use it — the point is that you never have to
+put a file anywhere yourself.)
+`/review` uses `omp-reviewer`; `/review-multi-modal` also uses
+`reviewer-primary`, `reviewer-linus`, `reviewer-danluu` and
+`reviewer-antagonist`.
 
-The personas have **no model pins** — seats take their model from the panel
-pick at launch. The prompt bodies (a blunt Linus-style reviewer, a
-measured Dan-Luu-style reviewer, a free-form antagonist) are just starting
-points — edit them freely; your customized copies are never clobbered by an
-update (the copy is the opt-in).
+Package agents sit *above* pi's builtins and *below* your own, so a same-named
+file in `~/.pi/agent/agents/` or your project's `agents/` still wins — customise
+by shadowing, and your copy is never clobbered by an update. `npm run
+verify:package` fails if the manifest ever stops exposing the directory, and
+`npm test` fails if a prompt names an agent the package does not ship.
 
 ## Panel rules — `/review config`
 
-The panel is rules, seeded with a smart default. Run `/review config` to
-open the effective config in an editor — it saves atomically to
-`~/.pi/agent/multi-model-review/config.json`. No file means the smart
-default (six seats, no excludes). A saved file IS the rules:
+`/review config` opens the rules in an editor and saves atomically to
+`~/.pi/agent/multi-model-review/config.json`. No file means the defaults, which
+are upstream/omp exactly:
 
 ```json
 {
-	"seats": [
-		{ "key": "primary-a", "agent": "reviewer-primary" },
-		{ "key": "primary-b", "agent": "reviewer-primary" },
-		{ "key": "primary-c", "agent": "reviewer-primary" },
-		{ "key": "linus", "agent": "reviewer-linus" },
-		{ "key": "danluu", "agent": "reviewer-danluu" },
-		{ "key": "antagonist", "agent": "reviewer-antagonist", "pass1Only": true }
-	],
+	"families": 1,
+	"shardDepth": "auto",
+	"crossCheck": false,
+	"confirmAboveRuns": 12,
 	"exclude": []
 }
 ```
 
-- **seats** — the panel: one line per seat (`agent` = a pi agent name, optional
-  `model` pin in full `provider/id` form, optional `pass1Only`). Add a seat,
-  delete a seat, pin a seat, swap personas — it's your roster. Pinned seats
-  skip discovery and keep their pin (an unreachable pin blocks the review
-  with an actionable error rather than silently substituting).
-- **exclude** — glob strings matched against `provider/model-id` (and the bare
-  provider name): shrink the discovery pool, e.g. `"ai-gw-baseten/*"` or
-  `"openai"`. Denylist by design: the default stays "whatever it finds", and
-  an allowlist would go stale.
+The fields and what each one costs are documented under
+[`/review`](#review--upstreams-review-by-default-exactly) above — and the editor
+itself explains them, so you do not have to come back here. This section
+deliberately does not repeat the list: two copies is how the old one came to
+document a field the parser rejects.
 
-A malformed saved config **blocks** the review with an error telling you what
-and where to fix — it never silently launches a different panel, because a
-saved pin or exclude can encode cost or policy intent.
+A malformed saved config **blocks** the review with an error naming what to fix,
+and renamed fields are refused by name rather than being silently ignored. It
+never silently launches a different panel, because a saved exclude or threshold
+can encode cost or policy intent.
 
 ## Dev loop
 
-The checkout is the live install: edit `src/index.ts`, restart pi (new sessions
-load the current code), and `/review` picks up the changes. No build step — pi
-loads the TypeScript directly. `npm run typecheck` to keep the compiler happy,
-`npm run verify:package` before publishing.
+The checkout is the live install: edit `src/`, restart pi, `/review` picks it
+up. No build step — pi loads the TypeScript directly.
+
+```bash
+npm run typecheck       # tsc
+npm test                # handler harness against real temp git repos
+npm run check:upstream  # verbatim upstream files have not drifted
+npm run verify:package  # tarball contains every runtime asset
+```
+
+Do not hand-edit anything listed as verbatim in `PROVENANCE.md`; put the change
+in `src/overrides.ts` or `src/prompts/pi-*.md` instead. `npm run check:upstream`
+will catch you.
 
 ## License
 
-MIT — see `LICENSE`. Derivative work: portions ported from
-[oh-my-pi](https://github.com/can1357/oh-my-pi) (MIT); see `PROVENANCE.md`.
+MIT — see `LICENSE`. Derivative work: portions ported verbatim from
+[oh-my-pi](https://github.com/can1357/oh-my-pi) (MIT) and
+`@oh-my-pi/pi-utils` (MIT); see `PROVENANCE.md`.

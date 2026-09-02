@@ -1,7 +1,7 @@
 {
   "name": "multi-model-review",
   "version": "0.2.0",
-  "description": "A /review command for pi that fans a diff out to a diverse multi-model reviewer panel in two passes and synthesizes one verdict \u2014 a port of oh-my-pi's /review command, models picked fresh from the session each time.",
+  "description": "A faithful port of oh-my-pi's /review command onto pi — verbatim upstream prompts, diff logic and heuristics — extended so every shard of the diff is reviewed by several different model families, which then cross-check each other.",
   "license": "MIT",
   "author": "Scott Meyer",
   "type": "module",
@@ -24,7 +24,9 @@
   "homepage": "https://github.com/Scott-Meyer/multi-model-review#readme",
   "files": [
     "src",
+    "vendor",
     "agents",
+    "UPSTREAM",
     "PROVENANCE.md",
     "LICENSE",
     "README.md"
@@ -35,17 +37,24 @@
   "scripts": {
     "typecheck": "tsc -p tsconfig.json",
     "verify:package": "node scripts/verify-package.mjs",
-    "test": "node --import jiti/register scripts/handler-test.mjs"
+    "test": "node --import jiti/register scripts/handler-test.mjs",
+    "check:upstream": "bash scripts/check-upstream-drift.sh"
   },
   "pi": {
     "extensions": [
       "./src/index.ts"
-    ]
+    ],
+    "subagents": {
+      "agents": [
+        "./agents"
+      ]
+    }
   },
   "devDependencies": {
     "typescript": "^5.7.0"
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "*"
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
   }
 }

@@ -1,0 +1,30 @@
+# Pinned upstream sources
+#
+# Everything listed here is VERBATIM upstream code, byte-for-byte, and must
+# never be hand-edited. scripts/check-upstream-drift.sh re-downloads these
+# exact versions and fails if any tracked file differs, so the fidelity claim
+# in PROVENANCE.md is checkable instead of aspirational.
+#
+# To move to a newer upstream: bump the version(s) below, run
+# `npm run check:upstream` to see exactly what changed, re-copy the files, and
+# re-derive our section overrides (src/prompts/pi-*.md) against the new text.
+
+OMP_PACKAGE=@oh-my-pi/pi-coding-agent
+OMP_VERSION=18.1.0
+
+UTILS_PACKAGE=@oh-my-pi/pi-utils
+UTILS_VERSION=18.1.0
+
+# Verbatim files: <local path> <=> <path inside the package tarball>
+#
+# vendor/prompt.ts            <= @oh-my-pi/pi-utils        src/prompt.ts
+# vendor/template.ts          <= @oh-my-pi/pi-utils        src/template.ts
+# src/prompts/review-request.md          <= @oh-my-pi/pi-coding-agent src/prompts/review-request.md
+# src/prompts/review-custom-request.md   <= @oh-my-pi/pi-coding-agent src/prompts/review-custom-request.md
+# src/prompts/review-headless-request.md <= @oh-my-pi/pi-coding-agent src/prompts/review-headless-request.md
+#
+# Reference-only (NOT verbatim in this repo; agents/omp-reviewer.md is adapted
+# from it because pi has no equivalent of omp's yield-section findings protocol,
+# and the name differs because pi-subagents ships its own `reviewer` builtin):
+#
+# upstream-reference/reviewer.md <= @oh-my-pi/pi-coding-agent src/prompts/agents/reviewer.md
