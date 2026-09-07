@@ -1,6 +1,6 @@
 {
   "name": "multi-model-review",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "A faithful port of oh-my-pi's /review command onto pi — verbatim upstream prompts, diff logic and heuristics — extended so every shard of the diff is reviewed by several different model families, which then cross-check each other.",
   "license": "MIT",
   "author": "Scott Meyer",
