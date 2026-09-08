@@ -234,6 +234,39 @@ Do not hand-edit anything listed as verbatim in `PROVENANCE.md`; put the change
 in `src/overrides.ts` or `src/prompts/pi-*.md` instead. `npm run check:upstream`
 will catch you.
 
+## Releasing to npm
+
+Repository collaborators with write access can release by pushing a `v<version>`
+tag. GitHub Actions tests and packs that commit, then publishes the verified
+tarball through [npm trusted publishing](https://docs.npmjs.com/trusted-publishers/)
+using a short-lived OIDC identity. No npm login, OTP, or stored npm token is needed
+for each release. Stable versions use `latest`; prereleases use `next`.
+
+After the release changes are on `main`:
+
+```bash
+npm version patch --no-git-tag-version
+VERSION=$(node -p 'require("./package.json").version')
+git add package.json package-lock.json
+git commit -S -m "Release $VERSION"
+git tag -s "v$VERSION" -m "multi-model-review v$VERSION"
+git push origin main
+git push origin "v$VERSION"
+```
+
+The tag must match both version fields in `package-lock.json` and `package.json`.
+Check the **Publish npm** Actions run before announcing the release. Existing
+tags are not republished when the workflow is added; create a new version rather
+than moving a release tag. **Run workflow** validates and packs only—it never
+publishes.
+
+One-time owner setup: npm's trusted publisher for `multi-model-review` is
+`Scott-Meyer/multi-model-review`, workflow **`publish.yml`**, environment **`npm`**,
+with direct publishing allowed. The GitHub environment permits **tags `v*` only**,
+with no required reviewer, so collaborators can release without owner approval.
+Changing the workflow filename or environment requires updating npm's trust
+configuration too.
+
 ## License
 
 MIT — see `LICENSE`. Derivative work: portions ported verbatim from

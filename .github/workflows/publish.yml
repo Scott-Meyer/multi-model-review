@@ -1,0 +1,101 @@
+name: Publish npm
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: npm-publish-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Verify and pack
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      dist-tag: ${{ steps.version.outputs.dist-tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Install OIDC-capable npm
+        run: npm install --global npm@12.0.1 --ignore-scripts
+      - name: Check release version
+        id: version
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFileSync, appendFileSync } from 'node:fs';
+          const pkg = JSON.parse(readFileSync('package.json', 'utf8'));
+          const lock = JSON.parse(readFileSync('package-lock.json', 'utf8'));
+          if (pkg.version !== lock.version || pkg.version !== lock.packages[''].version) {
+            throw new Error('package.json and package-lock.json versions differ');
+          }
+          if (process.env.GITHUB_EVENT_NAME === 'push' &&
+              (process.env.GITHUB_REF_TYPE !== 'tag' || process.env.GITHUB_REF_NAME !== `v${pkg.version}`)) {
+            throw new Error(`Release tag must be v${pkg.version}; got ${process.env.GITHUB_REF_NAME}`);
+          }
+          const distTag = pkg.version.split('+')[0].includes('-') ? 'next' : 'latest';
+          appendFileSync(process.env.GITHUB_OUTPUT, `dist-tag=${distTag}\n`);
+          console.log(`${pkg.name}@${pkg.version} -> ${distTag}`);
+          NODE
+      - run: npm ci --ignore-scripts
+      - name: Release checks
+        run: |
+          npm run typecheck
+          npm test
+          npm run check:upstream
+          npm run verify:package
+      - name: Pack verified source
+        run: |
+          mkdir -p "$RUNNER_TEMP/npm-release"
+          npm pack --ignore-scripts --pack-destination "$RUNNER_TEMP/npm-release"
+          cd "$RUNNER_TEMP/npm-release"
+          sha256sum *.tgz > SHA256SUMS
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: npm-package
+          path: ${{ runner.temp }}/npm-release/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish verified tarball
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      # No source checkout or dependency install in the OIDC-capable job.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Install OIDC-capable npm
+        run: npm install --global npm@12.0.1 --ignore-scripts
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: npm-package
+          path: release
+      - name: Publish to npm
+        working-directory: release
+        env:
+          DIST_TAG: ${{ needs.verify.outputs.dist-tag }}
+        run: |
+          sha256sum --check SHA256SUMS
+          packages=(./*.tgz)
+          [[ ${#packages[@]} -eq 1 && -f "${packages[0]}" ]]
+          npm publish "${packages[0]}" --ignore-scripts --provenance --access public --tag "$DIST_TAG" --registry=https://registry.npmjs.org
